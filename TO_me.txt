@@ -1,0 +1,6 @@
+✅ Чтобы максимально уменьшить .so надо будет включить флаг оптимизации в Cargo.toml:
+
+[profile.release]
+opt-level = "z"        # Максимальная компрессия
+lto = true             # Link Time Optimization
+codegen-units = 1      # Уменьшает размер бинаря

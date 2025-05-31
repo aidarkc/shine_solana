@@ -12,11 +12,28 @@ use register_user::*;
 use user_module::*;
 
 
+mod utils;
+// Подключаем модуль utils
+use utils::*;        // Импортируем все функции и структуры из него
+
+
 declare_id!("BmCgGmQbSjkE6Zg8WAwhxDMNHiTknMYqTF4ZVMrPdTpz");
 
 #[program]
 pub mod hello_solana {
     use super::*;
+
+
+
+    /// Тестовая функция — проксирует вызов в модуль `utils`
+    pub fn test_utils(ctx: Context<TestContext>, extra_pubkey: Pubkey,
+        number: u64, note: String,
+        str_array_len: u8, str_array: [String; 3],
+    ) -> Result<()> {
+        test(ctx, extra_pubkey, number, note, str_array_len, str_array)
+    }
+
+
 
     // Вызов функции из say_hello.rs
     pub fn say_hello(ctx: Context<SayHello>) -> Result<()> {
@@ -28,39 +45,15 @@ pub mod hello_solana {
         register_user_impl(ctx, login, pubkey)
     }
 
-
-/*
-    /// Entry-point, который будет виден в IDL и вызываться с фронта.
-    /// Из него просто пробрасываем вызов в реальную логику.
-    #[derive(Accounts)]
-    #[instruction(login: String, account_size: u32)]
-    pub struct RegisterUser2Entry<'info> {
-        // Тот же самый набор аккаунтов, что и в user_module::RegisterUser2
-        #[account(mut)]
-        signer: Signer<'info>,
-
-        #[account(mut, seeds = [USER_COUNT_PDA_SEED], bump)]
-        user_count: UncheckedAccount<'info>,
-
-        #[account(mut)]
-        search_by_name: UncheckedAccount<'info>,
-
-        #[account(mut)]
-        big_user_pda: UncheckedAccount<'info>,
-
-        #[account(mut)]
-        search_by_id: UncheckedAccount<'info>,
-
-        system_program: Program<'info, System>,
+    
+    
+    /// Расширенная регистрация пользователя
+    pub fn do_register_user2(ctx: Context<RegisterUser2>, login: String, pubkey: Pubkey, account_size: u32) -> Result<()> {
+        register_user2(ctx.into(), login, pubkey, account_size)
     }
-*/
-    
-    
-    /// Обработчик Anchor-инструкции.
-    /// `pubkey` можно передать отдельным аргументом, либо брать из signer.key().
-    pub fn do_register_user2(ctx: Context<RegisterUser2>, login: String, pubkey: Pubkey, account_size: u32, ) -> Result<()> {
-        // просто делегируем в реальную функцию
-        let inner: Context<RegisterUser2> = ctx.into();     // преобразуем в ожидаемый тип
-        register_user2(inner, login, pubkey, account_size)
+
+    /// Одноразовая инициализация счётчика пользователей
+    pub fn initialize_system(ctx: Context<InitSystem>) -> Result<()> {
+        init_system(ctx)
     }
 }
