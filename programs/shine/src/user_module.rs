@@ -1,197 +1,218 @@
-//! Модуль расширенной регистрации пользователя (register_user2)
-//! ----------------------------------------------------------------
-//! Версия без автосериализации Anchor: все данные в PDA пишутся как
-//! «сырой» массив байт. В начале каждого PDA находится **4‑байтный
-//! дескриптор формата** (сейчас всегда `1`). Далее данные располагаются
-//! строго по описанной ниже схеме.
+//! -----------------------------------------------------------------------------
+//! Расширенная регистрация пользователя (register_user2)
+//! -----------------------------------------------------------------------------
+//! Версия **без** автосериализации Anchor: все данные сохраняются как «сырой» массив
+//! байт (manual‑serialization). В начале КАЖДОЙ PDA, кроме счётчика пользователей,
+//! теперь находится **4‑байтный дескриптор формата** ( `FORMAT_DESCRIPTOR = 1` ).
 //!
-//! ----------------------------------------------------------------
+//! > Обратите внимание: **Счётчик пользователей** (`UserCountRaw`) БОЛЬШЕ не хранит
+//! > дескриптор — в нём теперь только 8‑байтное `u64` (идентификатор последнего
+//! > пользователя). Размер PDA счётчика = **8 байт**.
+//!
+//! -----------------------------------------------------------------------------
 //! СОДЕРЖАНИЕ МОДУЛЯ
-//! ----------------------------------------------------------------
+//! -----------------------------------------------------------------------------
 //! 1. Константы и префиксы PDA.
-//! 2. Пользовательские ошибки (ErrorCodeNew).
-//! 3. Структуры данных (для внутренних расчётов, в PDA они лежат в виде
-//!    байтов).
-//! 4. Функции сериализации / десериализации.
-//! 5. Валидация логина, ключа и размера PDA.
-//! 6. Один раз вызываемая инструкция `init_system` – создаёт счётчик
-//!    пользователей и записывает `[u32 descriptor, u64 count]`.
+//! 2. Пользовательские ошибки (`ErrorCodeNew`).
+//! 3. Структуры данных (in‑memory, для расчётов).
+//! 4. Сериализация / десериализация.
+//! 5. Валидация логина / ключа / размера PDA.
+//! 6. Одноразовая инструкция `init_system` – создаёт счётчик пользователей.
 //! 7. Инструкция `register_user2` – расширенная регистрация пользователя.
-//! 8. Вспомогательные функции чтения адреса BigUser PDA по имени / id.
-//!
-//! Всё снабжено подробными комментариями на русском.
-//!
-//! ----------------------------------------------------------------
-//! ПОДКЛЮЧЕНИЕ
-//! ----------------------------------------------------------------
-//! Добавьте в `lib.rs`:
+//! 8. Общая функция `create_pda_if_needed` – создаёт любой PDA при необходимости.
+//! 9. Вспомогательные off‑chain‑функции поиска PDA.
+//! -----------------------------------------------------------------------------
+//! ПОДКЛЮЧЕНИЕ В `lib.rs`
+//! -----------------------------------------------------------------------------
+//! ```rust
+//! mod user_module;                   // подключаем модуль
+//! pub use user_module::{             // экспортируем инструкции наружу
+//!     init_system,
+//!     register_user2,
+//! };
 //! ```
-//! mod user_module;
-//! pub use user_module::{init_system, register_user2};
-//! ```
-//! ----------------------------------------------------------------
+//! -----------------------------------------------------------------------------
 
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{clock::Clock, program::invoke_signed, system_instruction};
+use anchor_lang::prelude::*;                   // re‑export всех полезных типов Anchor
+use anchor_lang::solana_program::{             // низкоуровневые инструкции Solana
+                                               clock::Clock,                              // доступ к системным часам (unix_timestamp)
+                                               program::invoke_signed,                    // CPI‑вызов с PDA‑подписью
+                                               system_instruction,                        // встроенные инструкции SystemProgram
+};
 
-// ------------------------------------------------------------------
-//                            Константы
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//                              КОНСТАНТЫ
+// -----------------------------------------------------------------------------
 
-/// Общий дескриптор формата всех PDA – 4‑байтное little‑endian число.
-pub const FORMAT_DESCRIPTOR: u32 = 1;
+/// Общий дескриптор формата всех «сложных» PDA (BigUser / search‑индексы).
+pub const FORMAT_DESCRIPTOR: u32 = 1;          // 4‑байтовое LE‑число ("signature")
 
-/// seed PDA счётчика пользователей
-pub const USER_COUNT_PDA_SEED: &[u8] = b"user_count";
-/// Префикс PDA «больших» аккаунтов
+/// seed PDA счётчика пользователей (храним **u64** без дескриптора)
+pub const USER_COUNT_PDA_SEED: &[u8] = b"user_count"; // bytes‑литерал = seed
+/// Префикс PDA «больших» аккаунтов пользователя
 pub const BIG_USER_PDA_PREFIX: &[u8] = b"big_user";
 /// Префикс поискового PDA по имени
 pub const SEARCH_NAME_PDA_PREFIX: &[u8] = b"search_name";
 /// Префикс поискового PDA по id
 pub const SEARCH_ID_PDA_PREFIX: &[u8] = b"search_id";
 
-/// Размер поля `reserved` внутри BigUser PDA (можно увеличивать для
-/// будущих секций данных).
-const RESERVED_SIZE: usize = 1024;
+/// Размер зарезервированного поля внутри `BigUserData`
+const RESERVED_SIZE: usize = 1024;             // можно увеличивать при миграциях
 
-// Минимальный реальный объём пользовательских данных без резервов
-const MIN_BIG_USER_DATA_SIZE: usize = 4 /*descr*/ + 8 + 1 + 32 + 32 + 8 + 8;
+// Минимальный объём пользовательских данных (без пользовательского "extra")
+const MIN_BIG_USER_DATA_SIZE: usize =          // compile‑time расчёт
+    4  /*descr*/
+        + 8  /*id*/
+        + 1  /*login_len*/
+        + 32 /*login[32]*/
+        + 32 /*pubkey*/
+        + 8  /*created_at*/
+        + 8  /*updated_at*/;
 
-// ------------------------------------------------------------------
-//                              Ошибки
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//                                    ОШИБКИ
+// -----------------------------------------------------------------------------
 
-#[error_code]
+#[error_code]                                  // макрос Anchor для перечисления ошибок
 pub enum ErrorCodeNew {
     #[msg("Неверный формат имени пользователя: допускаются только a-z, 0-9 и _ (до 32 символов)")]
-    InvalidLoginFormat,
+    InvalidLoginFormat,                        // ошибка валидации логина
 
     #[msg("Пользователь с таким именем уже существует")]
-    UserAlreadyExists,
+    UserAlreadyExists,                         // имя занято
 
     #[msg("Имя является платным премиум-именем – требуется отдельная оплата")]
-    PremiumName,
+    PremiumName,                               // короткие имена = premium
 
     #[msg("Неверный публичный ключ (должен состоять из 32 байт)")]
-    InvalidPubkey,
+    InvalidPubkey,                             // pubkey ≠ 32 bytes
 
     #[msg("Неверный или неподдерживаемый размер PDA (должно быть 200‑4000 байт)")]
-    InvalidAccountSize,
+    InvalidAccountSize,                        // account_size вне допустимого диапазона
 }
 
-// ------------------------------------------------------------------
-//                       Структуры (in‑memory)
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//                        СТРУКТУРЫ (in‑memory, RAM)
+// -----------------------------------------------------------------------------
 
-/// Счётчик пользователей (u64)
+/// Счётчик пользователей (**теперь содержит ТОЛЬКО u64**, без дескриптора)
 pub struct UserCountRaw {
-    pub count: u64,
+    pub count: u64,                            // идентификатор последнего созданного пользователя
 }
 
-/// Поисковый PDA (имя/id → адрес BigUser)
+/// Поисковый PDA (индекс) → хранит адрес `BigUser` PDA
 pub struct SearchIndexRaw {
-    pub big_user: Pubkey,
+    pub big_user: Pubkey,                      // куда указывает индекс
 }
 
-/// Полные данные пользователя (BigUser PDA)
+/// Полные данные пользователя (PDA «BigUser»)
 pub struct BigUserData {
-    pub id: u64,
-    pub login_len: u8,
-    pub login: [u8; 32],
-    pub pubkey: Pubkey,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub reserved: [u8; RESERVED_SIZE],
+    pub id: u64,                               // уникальный numeric id
+    pub login_len: u8,                         // фактическая длина логина
+    pub login: [u8; 32],                       // логин ASCII, padded нулями
+    pub pubkey: Pubkey,                        // публичный ключ пользователя
+    pub created_at: i64,                       // unix‑timestamp создания
+    pub updated_at: i64,                       // unix‑timestamp последнего обновления
+    pub reserved: [u8; RESERVED_SIZE],         // резерв на будущее
 }
 
 impl BigUserData {
-    /// Минимальный объём среза, необходимый для сериализации (без учёта
-    /// желаемого пользователем `account_size`).
-    pub const fn byte_len() -> usize {
-        4 + 8 + 1 + 32 + 32 + 8 + 8 + RESERVED_SIZE
+    /// Минимальная длина сериализованного блока данных (без user‑extra).   
+    pub const fn byte_len() -> usize {         // const‑fn = вычисление на этапе компиляции
+        4 /*descr*/
+            + 8 + 1 + 32 + 32 + 8 + 8
+            + RESERVED_SIZE
     }
 }
 
-// ------------------------------------------------------------------
-//          Сериализация / десериализация (все → Vec<u8>)
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//                СЕРИАЛИЗАЦИЯ / ДЕСЕРИАЛИЗАЦИЯ (RAM ↔ Vec<u8>)
+// -----------------------------------------------------------------------------
 
+// ------------------------------- UserCount -----------------------------------
+
+/// Сериализуем `UserCountRaw` → вектор из 8 байт (LE‑u64)
 fn serialize_user_count(data: &UserCountRaw) -> Vec<u8> {
-    let mut out = Vec::with_capacity(12);
-    out.extend_from_slice(&FORMAT_DESCRIPTOR.to_le_bytes());
-    out.extend_from_slice(&data.count.to_le_bytes());
-    out
+    data.count.to_le_bytes().to_vec()          // просто LE‑u64 → Vec<u8>
 }
 
+/// Десериализуем массив байт в `UserCountRaw`
 fn deserialize_user_count(buf: &[u8]) -> Result<UserCountRaw> {
-    require!(buf.len() >= 12, ErrorCodeNew::InvalidAccountSize);
-    let mut descr = [0u8; 4];
-    descr.copy_from_slice(&buf[..4]);
-    require!(u32::from_le_bytes(descr) == FORMAT_DESCRIPTOR, ErrorCodeNew::InvalidAccountSize);
-    let mut cnt = [0u8; 8];
-    cnt.copy_from_slice(&buf[4..12]);
-    Ok(UserCountRaw { count: u64::from_le_bytes(cnt) })
+    require!(buf.len() >= 8, ErrorCodeNew::InvalidAccountSize); // надо минимум 8 байт
+    let mut cnt = [0u8; 8];                     // временный массив для копирования
+    cnt.copy_from_slice(&buf[..8]);             // копируем первые 8 байт
+    Ok(UserCountRaw { count: u64::from_le_bytes(cnt) }) // превращаем в u64
 }
 
+// ------------------------------ SearchIndex ----------------------------------
+
+/// Сериализация поискового индекса (descr + pubkey)
 fn serialize_search_index(data: &SearchIndexRaw) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 32);
-    out.extend_from_slice(&FORMAT_DESCRIPTOR.to_le_bytes());
-    out.extend_from_slice(data.big_user.as_ref());
+    let mut out = Vec::with_capacity(4 + 32);   // зарезервировали память
+    out.extend_from_slice(&FORMAT_DESCRIPTOR.to_le_bytes()); // 4‑байтный descr
+    out.extend_from_slice(data.big_user.as_ref());           // 32‑байтный pubkey
     out
 }
 
+/// Десериализация поискового индекса (Vec<u8> → struct)
 fn deserialize_search_index(buf: &[u8]) -> Result<SearchIndexRaw> {
-    require!(buf.len() >= 36, ErrorCodeNew::InvalidAccountSize);
+    require!(buf.len() >= 36, ErrorCodeNew::InvalidAccountSize); // 4 + 32 = 36
+    // проверяем дескриптор
     let mut descr = [0u8; 4];
     descr.copy_from_slice(&buf[..4]);
     require!(u32::from_le_bytes(descr) == FORMAT_DESCRIPTOR, ErrorCodeNew::InvalidAccountSize);
+    // копируем pubkey
     let mut pk = [0u8; 32];
     pk.copy_from_slice(&buf[4..36]);
     Ok(SearchIndexRaw { big_user: Pubkey::new_from_array(pk) })
 }
 
+// ------------------------------- BigUser -------------------------------------
+
+/// Сериализация `BigUserData` с учётом желаемого `account_size`
 fn serialize_big_user(data: &BigUserData, account_size: usize) -> Vec<u8> {
-    let base_len = BigUserData::byte_len();
-    let mut out = Vec::with_capacity(account_size);
-    out.extend_from_slice(&FORMAT_DESCRIPTOR.to_le_bytes());
-    out.extend_from_slice(&data.id.to_le_bytes());
-    out.push(data.login_len);
-    out.extend_from_slice(&data.login);
-    out.extend_from_slice(data.pubkey.as_ref());
-    out.extend_from_slice(&data.created_at.to_le_bytes());
-    out.extend_from_slice(&data.updated_at.to_le_bytes());
-    out.extend_from_slice(&data.reserved);
-    // Заполняем оставшееся пространство нулями, если пользователь попросил
-    // account_size больше минимального.
-    if account_size > base_len {
-        out.resize(account_size, 0);
+    let base_len = BigUserData::byte_len();     // «реальный» минимум
+    let mut out = Vec::with_capacity(account_size); // резервируем весь объём
+    // последовательная запись полей
+    out.extend_from_slice(&FORMAT_DESCRIPTOR.to_le_bytes());   // 4‑байтный descr
+    out.extend_from_slice(&data.id.to_le_bytes());             // id (u64 LE)
+    out.push(data.login_len);                                  // длина логина (u8)
+    out.extend_from_slice(&data.login);                        // сам логин (32)
+    out.extend_from_slice(data.pubkey.as_ref());               // pubkey (32)
+    out.extend_from_slice(&data.created_at.to_le_bytes());     // created_at (i64 LE)
+    out.extend_from_slice(&data.updated_at.to_le_bytes());     // updated_at (i64 LE)
+    out.extend_from_slice(&data.reserved);                     // reserved bytes
+    if account_size > base_len {                               // если пользователь запросил > base_len
+        out.resize(account_size, 0);                           // добиваем нулями до нужного объёма
     }
     out
 }
 
-// Обратная функция десериализации при необходимости можно добавить позже.
+// (Обратную десериализацию можно добавить позднее при необходимости)
 
-// ------------------------------------------------------------------
-//                      Валидационные утилиты
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//                       ВАЛИДАЦИОННЫЕ УТИЛИТЫ
+// -----------------------------------------------------------------------------
 
+/// Проверка логина на формат (a‑z, 0‑9, "_", ≤ 32)
 fn validate_login(login: &str) -> Result<()> {
-    if login.len() > 32 {
+    if login.len() > 32 {                       // длина > 32 → ошибка
         return err!(ErrorCodeNew::InvalidLoginFormat);
     }
-    for c in login.chars() {
+    for c in login.chars() {                    // проходим по каждому символу
         if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
             return err!(ErrorCodeNew::InvalidLoginFormat);
         }
     }
-    Ok(())
+    Ok(())                                      // всё ок
 }
 
+/// Простая проверка «короткое имя = премиум» (можно усложнить)
 fn is_premium_name(login: &str) -> bool {
-    // TODO: добавить более сложные проверки «красоты» имени
-    login.len() < 8
+    login.len() < 8                             // примитив: < 8 символов → платное
 }
 
+/// Проверка публичного ключа (длина всегда 32 байта)
 fn validate_pubkey(pk: &Pubkey) -> Result<()> {
     if pk.to_bytes().len() != 32 {
         return err!(ErrorCodeNew::InvalidPubkey);
@@ -199,6 +220,7 @@ fn validate_pubkey(pk: &Pubkey) -> Result<()> {
     Ok(())
 }
 
+/// Проверка желаемого `account_size` (≥ 200, ≤ 4000, ≥ минимального big_user)
 fn validate_account_size(size: usize) -> Result<()> {
     if size < 200 || size > 4000 || size < BigUserData::byte_len() {
         return err!(ErrorCodeNew::InvalidAccountSize);
@@ -206,164 +228,268 @@ fn validate_account_size(size: usize) -> Result<()> {
     Ok(())
 }
 
-// ------------------------------------------------------------------
-//            ONE‑TIME инициализация счётчика пользователей
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//          ОБЩАЯ ФУНКЦИЯ СОЗДАНИЯ PDA, ЕСЛИ ЕГО ЕЩЁ НЕТ
+// -----------------------------------------------------------------------------
 
-#[derive(Accounts)]
-pub struct InitSystem<'info> {
-    #[account(mut)]
-    pub admin: Signer<'info>,
-
-
-    /// CHECK: Аккаунт создаётся вручную и проверяется по seeds
-    #[account(mut, seeds = [USER_COUNT_PDA_SEED], bump)]
-    pub user_count: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
-}
-
-pub fn init_system(ctx: Context<InitSystem>) -> Result<()> {
-    // ----------------------------------------------------------
-    // Если PDA уже существует – просто выходим.
-    // ----------------------------------------------------------
-    if !ctx.accounts.user_count.data_is_empty() {
+/// Создаёт PDA‑аккаунт, если на нём ещё **0 лампортов** (то есть счёт не создан).
+/// Все повторяющиеся действия (расчёт ренты, вызов SystemProgram::CreateAccount,
+/// подпись через seeds) объединены в одну функцию.
+fn create_pda_if_needed<'info>(
+    payer: &Signer<'info>,                      // аккаунт‑плательщик (обычно tx‑signer)
+    pda_account: &UncheckedAccount<'info>,      // AccountInfo PDA (может быть пустым)
+    pda_key: &Pubkey,                           // ожидаемый адрес PDA
+    seeds: &[&[u8]],                            // seeds + bump, которые формируют PDA
+    space: usize,                               // сколько байт необходимо хранить
+    program_id: &Pubkey,                        // адрес текущей программы
+    system_program: &Program<'info, System>,    // встроенная системная программа
+) -> Result<()> {
+    if pda_account.lamports() > 0 {             // уже создан → ничего не делаем
         return Ok(());
     }
 
-    // ----------------------------------------------------------
-    // Создаём PDA через CPI
-    // ----------------------------------------------------------
-    let rent = Rent::get()?;
-    let space = 12; // 4 descr + 8 count
-    let lamports = rent.minimum_balance(space);
-    let (pda, bump) = Pubkey::find_program_address(&[USER_COUNT_PDA_SEED], ctx.program_id);
-    let seeds = &[USER_COUNT_PDA_SEED, &[bump]];
+    let rent = Rent::get()?;                    // получаем параметры аренды
+    let lamports = rent.minimum_balance(space); // минимум для rent‑exempt
 
-    // Инструкция SystemProgram::CreateAccount
+    // формируем инструкцию `SystemProgram::CreateAccount`
     let ix = system_instruction::create_account(
-        &ctx.accounts.admin.key(),
-        &pda,
-        lamports,
-        space as u64,
-        ctx.program_id,
+        &payer.key(),                           // кто платит
+        pda_key,                                // какой PDA создаём
+        lamports,                               // сколько лампортов перечислить
+        space as u64,                           // объём в байтах
+        program_id,                             // владелец аккаунта – наша программа
     );
 
+    // вызываем инструкцию через CPI + PDA‑подпись
     invoke_signed(
         &ix,
         &[
-            ctx.accounts.admin.to_account_info(),
-            ctx.accounts.user_count.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
+            payer.to_account_info(),            // плательщик
+            pda_account.to_account_info(),      // создаваемый PDA
+            system_program.to_account_info(),   // системная программа
         ],
-        &[seeds],
-    )?;
-
-    // ----------------------------------------------------------
-    // Записываем стартовое значение счётчика
-    // ----------------------------------------------------------
-    let raw = serialize_user_count(&UserCountRaw { count: 0 });
-    ctx.accounts.user_count.data.borrow_mut()[..raw.len()].copy_from_slice(&raw);
+        &[seeds],                               // seeds для подписи PDA
+    )?;                                          // "?" = propagate ошибка, если есть
 
     Ok(())
 }
 
-// ------------------------------------------------------------------
-//                Расширенная регистрация пользователя
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//          ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ (одноразово) – счётчик пользователей
+// -----------------------------------------------------------------------------
+
+#[derive(Accounts)]                             // макрос Anchor: описание контекста
+pub struct InitSystem<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,                  // кто инициализирует (платит за PDA)
+
+    /// CHECK: PDA создаётся вручную → безопасно помечаем Unchecked
+    #[account(mut)]
+    pub user_count: UncheckedAccount<'info>,    // счётчик пользователей
+
+    pub system_program: Program<'info, System>, // встроенная системная программа
+}
+
+/// Инструкция `init_system` – вызывается **один раз** для создания PDA счётчика.
+
+/// Инструкция `init_system` – вызывается **один раз** для создания PDA счётчика.
+pub fn init_system(ctx: Context<InitSystem>) -> Result<()> {
+    // ----------------------------------------------------------------------
+    // 0. Вычисляем правильный адрес PDA user_count
+    // ----------------------------------------------------------------------
+    let (expected_pda, bump) = Pubkey::find_program_address(&[USER_COUNT_PDA_SEED], ctx.program_id);
+
+    // Сверяем с переданным аккаунтом — защита от подмены
+    require_keys_eq!(
+        ctx.accounts.user_count.key(),
+        expected_pda,
+        ErrorCodeNew::InvalidAccountSize // Можно завести свою ошибку типа InvalidUserCountPda
+    );
+
+    let seeds: &[&[u8]] = &[USER_COUNT_PDA_SEED, &[bump]];
+    let space = 8usize;
+
+    // ----------------------------------------------------------------------
+    // 1. Если PDA уже существует → просто выходим
+    // ----------------------------------------------------------------------
+    if !ctx.accounts.user_count.data_is_empty() {
+        return Ok(());
+    }
+
+    // ----------------------------------------------------------------------
+    // 2. Создаём PDA счётчика (если он всё ещё пустой)
+    // ----------------------------------------------------------------------
+    create_pda_if_needed(
+        &ctx.accounts.admin,
+        &ctx.accounts.user_count,
+        &expected_pda,
+        seeds,
+        space,
+        ctx.program_id,
+        &ctx.accounts.system_program,
+    )?;
+
+    // ----------------------------------------------------------------------
+    // 3. Записываем начальное значение счётчика (0)
+    // ----------------------------------------------------------------------
+    let raw = serialize_user_count(&UserCountRaw { count: 0 });
+    ctx.accounts.user_count.data.borrow_mut()[..raw.len()]
+        .copy_from_slice(&raw);
+
+    Ok(())
+}
+
+/*pub fn init_system(ctx: Context<InitSystem>) -> Result<()> {
+    // 1. Если PDA уже существует → просто выходим (ничего не делаем)
+    if !ctx.accounts.user_count.data_is_empty() { // data_is_empty = false → PDA уже создан
+        return Ok(());
+    }
+
+    // 2. Создаём PDA счётчика (space = 8 байт, без дескриптора)
+    let space = 8usize;                         // 8 байт → одно поле u64
+    let (pda_key, bump) = Pubkey::find_program_address( // получаем PDA‑адрес + bump
+                                                        &[USER_COUNT_PDA_SEED],                 // seeds
+                                                        ctx.program_id,                         // адрес программы
+    );
+
+    let seeds: &[&[u8]] = &[USER_COUNT_PDA_SEED, &[bump]]; // seeds массив для подписи
+
+    create_pda_if_needed(                       // создаём PDA, если нужно
+                                                &ctx.accounts.admin,                    // кто платит
+                                                &ctx.accounts.user_count,               // PDA‑аккаунт
+                                                &pda_key,                               // ключ PDA
+                                                seeds,                                  // seeds + bump
+                                                space,                                  // 8 байт
+                                                ctx.program_id,                         // id программы
+                                                &ctx.accounts.system_program,           // системная программа
+    )?;
+
+    // 3. Записываем начальное значение счётчика (0)
+    let raw = serialize_user_count(&UserCountRaw { count: 0 }); // Vec<u8> из 8 байт
+    ctx.accounts.user_count.data.borrow_mut()[..raw.len()].copy_from_slice(&raw); // пишем в PDA
+
+    Ok(())                                       // done
+}
+*/
+// -----------------------------------------------------------------------------
+//                 ИНСТРУКЦИЯ РЕГИСТРАЦИИ ПОЛЬЗОВАТЕЛЯ
+// -----------------------------------------------------------------------------
 
 #[derive(Accounts)]
-#[instruction(login: String, account_size: u32)]
+#[instruction(login: String, account_size: u32)] // прокидываем параметры для проверки seeds
 pub struct RegisterUser2<'info> {
     #[account(mut)]
-    pub signer: Signer<'info>,
+    pub signer: Signer<'info>,                  // пользователь, вызывающий регистрацию
 
-    /// Счётчик пользователей
-    /// CHECK: Счётчик пользователей читается/пишется вручную как массив байт с дескриптором
-    #[account(mut, seeds=[USER_COUNT_PDA_SEED], bump)]
+    /// CHECK: PDA счётчика (читаем + пишем вручную как сырой массив)
+    #[account(mut)]
     pub user_count: UncheckedAccount<'info>,
 
-    /// Поисковый PDA по имени (может не существовать)
-    /// CHECK: Создаётся вручную, проверяется на соответствие PDA по login
+    /// CHECK: поисковый PDA по имени (может быть пустым)
     #[account(mut)]
     pub search_by_name: UncheckedAccount<'info>,
 
-    /// BigUser PDA (может не существовать)
-    /// CHECK: Создаётся вручную, проверяется на соответствие PDA по login
+    /// CHECK: большой PDA пользователя (может быть пустым)
     #[account(mut)]
     pub big_user_pda: UncheckedAccount<'info>,
 
-    /// Поисковый PDA по id (будет создан внутри)
-
-    /// CHECK: Создаётся вручную, проверяется на соответствие PDA по id    #[account(mut)]
+    /// CHECK: поисковый PDA по id (может быть пустым, создаём внутри)
+    #[account(mut)]
     pub search_by_id: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
 }
 
+/// Основная инструкция: регистрирует нового пользователя.
 pub fn register_user2(
-    ctx: Context<RegisterUser2>,
-    login: String,
-    new_pubkey: Pubkey,
-    account_size: u32,
+    ctx: Context<RegisterUser2>,                // контекст (счета + системные)
+    login: String,                              // желаемый логин
+    new_pubkey: Pubkey,                         // публичный ключ пользователя
+    account_size: u32,                          // желаемый размер BigUser PDA
 ) -> Result<()> {
-    // 1. Проверка логина
-    validate_login(&login)?;
+    // ----------------------------------------------------------------------
+    // 1. Проверяем логин на корректность
+    // ----------------------------------------------------------------------
+    validate_login(&login)?;                    // формат + длина
 
-    // 2. Проверка существования поискового PDA по имени
-    let (name_pda, name_bump) = Pubkey::find_program_address(&[SEARCH_NAME_PDA_PREFIX, login.as_bytes()], ctx.program_id);
-    require_keys_eq!(ctx.accounts.search_by_name.key(), name_pda, ErrorCodeNew::InvalidAccountSize);
-    if !ctx.accounts.search_by_name.data_is_empty() {
+    // ----------------------------------------------------------------------
+    // 2. Проверяем, существует ли уже индекс по этому логину
+    // ----------------------------------------------------------------------
+    let (name_pda_key, name_bump) = Pubkey::find_program_address(
+        &[SEARCH_NAME_PDA_PREFIX, login.as_bytes()],
+        ctx.program_id,
+    );
+    if !ctx.accounts.search_by_name.data_is_empty() {               // данные уже есть → пользователь существует
         return err!(ErrorCodeNew::UserAlreadyExists);
     }
 
-    // 3. Премиум‑имя
+    // ----------------------------------------------------------------------
+    // 3. Проверяем, не премиум‑ли имя (короткие имена платные)
+    // ----------------------------------------------------------------------
     if is_premium_name(&login) {
         return err!(ErrorCodeNew::PremiumName);
     }
 
-    // 4. Публичный ключ и размер PDA
-    validate_pubkey(&new_pubkey)?;
-    validate_account_size(account_size as usize)?;
+    // ----------------------------------------------------------------------
+    // 4. Проверяем публичный ключ и желаемый размер PDA
+    // ----------------------------------------------------------------------
+    validate_pubkey(&new_pubkey)?;              // pubkey = 32 bytes
+    validate_account_size(account_size as usize)?; // размер PDA в рамках правила
 
-    // 5. Читаем и инкрементируем счётчик
-    let mut cnt_data = ctx.accounts.user_count.data.borrow_mut();
-    let current_cnt = deserialize_user_count(&cnt_data[..])?.count;
+    // ----------------------------------------------------------------------
+    // 5. Загружаем PDA счётчика пользователей — по адресу, вычисленному внутри
+    // ----------------------------------------------------------------------
+
+    // 1. Вычисляем ожидаемый PDA по сидам
+    let (user_count_pda_key, _) =
+        Pubkey::find_program_address(&[USER_COUNT_PDA_SEED], ctx.program_id);
+
+    // 2. Ищем этот аккаунт среди remaining_accounts (не в ctx.accounts!)
+    let user_count_account = ctx.remaining_accounts
+        .iter()
+        .find(|acc| acc.key == &user_count_pda_key)
+        .ok_or_else(|| error!(ErrorCodeNew::InvalidAccountSize))?;
+
+    // 3. Загружаем данные из PDA, десериализуем счётчик
+    let mut user_count_data = user_count_account.data.borrow_mut();
+    let current_cnt = deserialize_user_count(&user_count_data[..])?.count;
+
+    // 4. Увеличиваем счётчик на 1 и сериализуем обратно
     let new_id = current_cnt + 1;
-    let user_count_serialized = serialize_user_count(&UserCountRaw { count: new_id });
-    cnt_data[..user_count_serialized.len()].copy_from_slice(&user_count_serialized);
+    let serialized = serialize_user_count(&UserCountRaw { count: new_id });
+    user_count_data[..serialized.len()].copy_from_slice(&serialized);
+    drop(user_count_data);
+                           // явный drop borrow (необязательно, но наглядно)
+    
+    
+    // ----------------------------------------------------------------------
+    // 6. Создаём (при необходимости) BigUser PDA
+    // ----------------------------------------------------------------------
+    let (big_pda_key, big_bump) = Pubkey::find_program_address(
+        &[BIG_USER_PDA_PREFIX, login.as_bytes()],
+        ctx.program_id,
+    );
 
-    // 6. Создаём BigUser PDA
-    let (big_pda, big_bump) = Pubkey::find_program_address(&[BIG_USER_PDA_PREFIX, login.as_bytes()], ctx.program_id);
-    require_keys_eq!(ctx.accounts.big_user_pda.key(), big_pda, ErrorCodeNew::InvalidAccountSize);
+    let big_seeds: &[&[u8]] = &[BIG_USER_PDA_PREFIX, login.as_bytes(), &[big_bump]]; // seeds + bump
+    create_pda_if_needed(
+        &ctx.accounts.signer,                   // payer
+        &ctx.accounts.big_user_pda,             // PDA‑аккаунт
+        &big_pda_key,                           // ключ PDA
+        big_seeds,                              // seeds array
+        account_size as usize,                  // space
+        ctx.program_id,                         // id программы
+        &ctx.accounts.system_program,           // системная программа
+    )?;
 
-    if ctx.accounts.big_user_pda.lamports() == 0 {
-        let rent = Rent::get()?;
-        let lamports = rent.minimum_balance(account_size as usize);
-        let ix = system_instruction::create_account(
-            &ctx.accounts.signer.key(),
-            &big_pda,
-            lamports,
-            account_size as u64,
-            ctx.program_id,
-        );
-        let seeds = &[BIG_USER_PDA_PREFIX, login.as_bytes(), &[big_bump]];
-        invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.big_user_pda.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[seeds],
-        )?;
-    }
+    // ----------------------------------------------------------------------
+    // 7. Записываем данные пользователя в BigUser PDA
+    // ----------------------------------------------------------------------
+    let clock = Clock::get()?;                  // берём текущий unix_timestamp
 
-    // 7. Пишем данные пользователя
-    let clock = Clock::get()?;
-    let mut login_bytes = [0u8; 32];
-    login_bytes[..login.len()].copy_from_slice(login.as_bytes());
+    let mut login_bytes = [0u8; 32];            // zero‑padded массив под логин
+    login_bytes[..login.len()].copy_from_slice(login.as_bytes()); // копируем логин
 
+    // формируем структуру BigUser
     let big_user_struct = BigUserData {
         id: new_id,
         login_len: login.len() as u8,
@@ -373,74 +499,70 @@ pub fn register_user2(
         updated_at: clock.unix_timestamp,
         reserved: [0u8; RESERVED_SIZE],
     };
+
+    // сериализуем структуру в Vec<u8>
     let serialized_big = serialize_big_user(&big_user_struct, account_size as usize);
+    // пишем bytes в PDA
     ctx.accounts.big_user_pda.data.borrow_mut()[..serialized_big.len()].copy_from_slice(&serialized_big);
 
-    // 8. Создаём поисковый PDA по имени (если ещё не создан)
-    if ctx.accounts.search_by_name.lamports() == 0 {
-        let rent = Rent::get()?;
-        let space = 36; // 4 descr + 32 pubkey
-        let lamports = rent.minimum_balance(space);
-        let ix = system_instruction::create_account(
-            &ctx.accounts.signer.key(),
-            &name_pda,
-            lamports,
-            space as u64,
-            ctx.program_id,
-        );
-        let seeds = &[SEARCH_NAME_PDA_PREFIX, login.as_bytes(), &[name_bump]];
-        invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.search_by_name.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[seeds],
-        )?;
-    }
-    let search_by_name_raw = serialize_search_index(&SearchIndexRaw { big_user: big_pda });
+    // ----------------------------------------------------------------------
+    // 8. Создаём / обновляем поисковый PDA по имени
+    // ----------------------------------------------------------------------
+    let name_seeds: &[&[u8]] = &[SEARCH_NAME_PDA_PREFIX, login.as_bytes(), &[name_bump]];
+    create_pda_if_needed(
+        &ctx.accounts.signer,
+        &ctx.accounts.search_by_name,
+        &name_pda_key,
+        name_seeds,
+        36,                                    // 4 descr + 32 pubkey
+        ctx.program_id,
+        &ctx.accounts.system_program,
+    )?;
+
+    // записываем индекс (descr + pubkey)
+    let search_by_name_raw = serialize_search_index(&SearchIndexRaw { big_user: big_pda_key });
     ctx.accounts.search_by_name.data.borrow_mut()[..search_by_name_raw.len()].copy_from_slice(&search_by_name_raw);
 
-    // 9. Создаём поисковый PDA по id
+    // ----------------------------------------------------------------------
+    // 9. Создаём / обновляем поисковый PDA по id
+    // ----------------------------------------------------------------------
     let id_seed = new_id.to_le_bytes();
-    let (id_pda, id_bump) = Pubkey::find_program_address(&[SEARCH_ID_PDA_PREFIX, &id_seed], ctx.program_id);
-    require_keys_eq!(ctx.accounts.search_by_id.key(), id_pda, ErrorCodeNew::InvalidAccountSize);
+    let (id_pda_key, id_bump) = Pubkey::find_program_address(&[SEARCH_ID_PDA_PREFIX, &id_seed], ctx.program_id);
 
-    if ctx.accounts.search_by_id.lamports() == 0 {
-        let rent = Rent::get()?;
-        let space = 36;
-        let lamports = rent.minimum_balance(space);
-        let ix = system_instruction::create_account(
-            &ctx.accounts.signer.key(),
-            &id_pda,
-            lamports,
-            space as u64,
-            ctx.program_id,
-        );
-        let seeds = &[SEARCH_ID_PDA_PREFIX, &id_seed, &[id_bump]];
-        invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.signer.to_account_info(),
-                ctx.accounts.search_by_id.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
-            &[seeds],
-        )?;
-    }
-    let search_by_id_raw = serialize_search_index(&SearchIndexRaw { big_user: big_pda });
+    let id_seeds: &[&[u8]] = &[SEARCH_ID_PDA_PREFIX, &id_seed, &[id_bump]];
+    create_pda_if_needed(
+        &ctx.accounts.signer,
+        &ctx.accounts.search_by_id,
+        &id_pda_key,
+        id_seeds,
+        36,                                    // 4 descr + 32 pubkey
+        ctx.program_id,
+        &ctx.accounts.system_program,
+    )?;
+
+    let search_by_id_raw = serialize_search_index(&SearchIndexRaw { big_user: big_pda_key });
     ctx.accounts.search_by_id.data.borrow_mut()[..search_by_id_raw.len()].copy_from_slice(&search_by_id_raw);
 
-    msg!("Пользователь '{}' (id = {}) успешно зарегистрирован", login, new_id);
+    // ----------------------------------------------------------------------
+    // 10. Логируем успешную регистрацию
+    // ----------------------------------------------------------------------
+    msg!(
+        "Пользователь '{}' зарегистрирован (id = {}, pubkey = {})",
+        login, new_id, new_pubkey
+    );
     Ok(())
 }
 
-// ------------------------------------------------------------------
-//          Утилиты чтения адреса BigUser PDA off‑chain (raw)
-// ------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//              OFF‑CHAIN ХЕЛПЕРЫ ДЛЯ ПОИСКА BigUser PDA
+// -----------------------------------------------------------------------------
 
-pub fn big_user_by_name<'info>(program_id: &Pubkey, name: &str, accounts: &[AccountInfo<'info>]) -> Option<Pubkey> {
+/// off‑chain‑функция: получить адрес BigUser по имени (если индекс загружен в `accounts`)
+pub fn big_user_by_name<'info>(
+    program_id: &Pubkey,                       // адрес программы
+    name: &str,                                // логин ascii
+    accounts: &[AccountInfo<'info>],           // все доступные PDA‑аккаунты
+) -> Option<Pubkey> {
     let (pda, _) = Pubkey::find_program_address(&[SEARCH_NAME_PDA_PREFIX, name.as_bytes()], program_id);
     accounts
         .iter()
@@ -449,7 +571,12 @@ pub fn big_user_by_name<'info>(program_id: &Pubkey, name: &str, accounts: &[Acco
         .map(|idx| idx.big_user)
 }
 
-pub fn big_user_by_id<'info>(program_id: &Pubkey, id: u64, accounts: &[AccountInfo<'info>]) -> Option<Pubkey> {
+/// off‑chain‑функция: получить адрес BigUser по numeric id
+pub fn big_user_by_id<'info>(
+    program_id: &Pubkey,
+    id: u64,
+    accounts: &[AccountInfo<'info>],
+) -> Option<Pubkey> {
     let (pda, _) = Pubkey::find_program_address(&[SEARCH_ID_PDA_PREFIX, &id.to_le_bytes()], program_id);
     accounts
         .iter()
@@ -458,10 +585,14 @@ pub fn big_user_by_id<'info>(program_id: &Pubkey, id: u64, accounts: &[AccountIn
         .map(|idx| idx.big_user)
 }
 
-//--------------------------------------------------------------------
-//                 Хелпер для off‑chain: адрес счётчика
-//--------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//              ХЕЛПЕР: получить адрес PDA счётчика пользователей
+// -----------------------------------------------------------------------------
 
 pub fn user_count_pda(program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[USER_COUNT_PDA_SEED], program_id)
 }
+
+// -----------------------------------------------------------------------------
+//                            КОНЕЦ МОДУЛЯ
+// -----------------------------------------------------------------------------

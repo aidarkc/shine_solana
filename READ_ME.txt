@@ -4,9 +4,12 @@ JSON RPC URL: http://127.0.0.1:8899
 # Запустить саму ноду
 solana-test-validator
 # Удалить процесс ноды что бы запустить заново
+kill -9 $(pgrep -f "solana-test-validator")
+
+или
 ps aux | grep solana-test-validator
-и потом
-kill -9 1063577
+а потом
+kill -9 1052345
 # Убивает и логи и всю базу локальной ноды
 rm -rf test-ledger
 
