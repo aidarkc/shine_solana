@@ -51,6 +51,25 @@ pub mod hello_solana {
     //     register_user2(ctx.into(), login, pubkey, account_size)
     // }
 
+
+
+///---------------------------------------------------------------
+/// Дальше по делу :)
+/// --------------------------------------------------------------
+
+
+
+    /// Вызов register_user_step_one — расширенная регистрация
+    pub fn register_user_step_one(
+        ctx: Context<RegisterUserStepOne>,
+        login: String,
+        pubkey: Pubkey,
+    ) -> Result<()> {
+        utils::register_user_step_one(ctx, login, pubkey)
+    }
+    
+    
+    
     /// Одноразовая инициализация счётчика пользователей
     pub fn initialize_user_counter(ctx: Context<InitUserCounter>) -> Result<()> {
         // Вызов внутренней логики из утилит

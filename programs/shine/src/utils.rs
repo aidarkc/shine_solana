@@ -1,10 +1,17 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
+    program::invoke,
     program::invoke_signed,
     system_instruction,
 };
+use std::str::FromStr;
 
+
+// Префикс для PDA пользователей по логину
 const USER_SEED_PREFIX: &str = "u=";
+// Постоянный адрес получателя комиссии    key3
+pub const REGISTRATION_FEE_RECEIVER: &str = "6bFc5Gz5qF172GQhK5HpDbWs8F6qcSxdHn5XqAstf1fY"; 
+
 
 /// Контекст вызова test_utils
 #[derive(Accounts)]
@@ -173,9 +180,9 @@ pub enum UserDataError {
 }
 
 ///---------------------------------------------------------------------------------
-/// 
+///
 ///   СТРУКТУРА ПОЛЬЗОВАТЕЛЯ И ЕЁ СЕРИАЛИЗАЦИЯ И ДЕСЕРИАЛИЗАЦИЯ
-/// 
+///
 /// --------------------------------------------------------------------------------
  
 /// Простая структура пользователя
@@ -468,7 +475,7 @@ pub const USER_COUNTER_SEED: &str = "user_counter";
 /// ───────────────────────────────────────────────────────────────────────
 /// Чтение значения счётчика пользователей из PDA
 /// ───────────────────────────────────────────────────────────────────────
-/// 
+///
 pub fn read_user_counter_pda<'info>(
     counter_pda: &AccountInfo<'info>, // переданный аккаунт
     program_id: &Pubkey,              // ID текущей программы
@@ -513,7 +520,7 @@ pub fn write_user_counter_pda<'info>(
 /// Инициализация PDA счётчика пользователей (однократная)
 /// ───────────────────────────────────────────────────────────────────────
 ///
-/// структура вызова 
+/// структура вызова
 #[derive(Accounts)]
 pub struct InitUserCounter<'info> {
     /// Тот, кто платит за создание PDA
@@ -529,7 +536,7 @@ pub struct InitUserCounter<'info> {
     /// Системная программа Solana
     pub system_program: Program<'info, System>,
 }
-/// и функция 
+/// и функция
 pub fn initialize_user_counter<'info>(
     counter_pda: &AccountInfo<'info>,
     signer: &AccountInfo<'info>,         // платит за создание
@@ -563,6 +570,190 @@ pub fn initialize_user_counter<'info>(
     msg!("PDA Со счётчиком пользователей успешно создан");
     Ok(())
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// ───────────────────────────────────────────────────────────────────────
+/// РЕГИСТРАЦИЯ пользователя (шаг ПЕРВЫЙ) по логину
+/// ───────────────────────────────────────────────────────────────────────
+
+
+pub fn register_user_step_one(
+    ctx: Context<RegisterUserStepOne>,
+    login: String,
+    user_pubkey: Pubkey,
+) -> Result<()> {
+    // ───────────────────────────────────────────────
+    // 1. Проверка валидности логина
+    validate_login(&login)?; // вызывает функцию ниже
+
+    // ───────────────────────────────────────────────
+    // 2. Проверяем, что логин не является "особым" (зарезервированным)
+    let reserved_logins = ["admin", "support", "solana"]; // можно расширить
+    require!(
+        !reserved_logins.contains(&login.as_str()),
+        ErrorCode::InvalidLogin
+    );
+
+    // ───────────────────────────────────────────────
+    // 3. Проверка PDA
+    let seed_string = format!("{}{}", USER_SEED_PREFIX, login);
+    let seed_bytes = seed_string.as_bytes();
+    let (expected_pda, bump) = Pubkey::find_program_address(&[seed_bytes], ctx.program_id);
+    require!(
+        &expected_pda == ctx.accounts.user_by_login_pda.key,
+        ErrorCode::InvalidPdaAddress
+    );
+
+    // ───────────────────────────────────────────────
+    // 4. Проверяем, что PDA ещё не инициализирован
+    if ctx.accounts.user_by_login_pda.owner != &Pubkey::default() {
+        return Err(error!(ErrorCode::UserAlreadyExists));
+    }
+
+    // ───────────────────────────────────────────────
+    // 5. Перевод 0.01 SOL комиссии за регистрацию
+    let expected_receiver = Pubkey::from_str(REGISTRATION_FEE_RECEIVER)
+        .map_err(|_| error!(ErrorCode::InvalidLogin))?;
+    require!(
+        ctx.accounts.fee_receiver.key == &expected_receiver,
+        ErrorCode::InvalidPdaAddress
+    );
+
+    let transfer_instruction = system_instruction::transfer(
+        ctx.accounts.signer.key,
+        ctx.accounts.fee_receiver.key,
+        10_000_000, // 0.01 SOL в лампортах
+    );
+    invoke(
+        &transfer_instruction,
+        &[
+            ctx.accounts.signer.clone(),
+            ctx.accounts.fee_receiver.clone(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
+    )?;
+
+    // ───────────────────────────────────────────────
+    // 6. Получаем текущий счётчик
+    let current_id = read_user_counter_pda(&ctx.accounts.user_counter, ctx.program_id)?;
+
+    // ───────────────────────────────────────────────
+    // 7. Создаём структуру UserByLogin
+    let user = UserByLogin {
+        login: login.clone(),
+        id: current_id + 1,
+        pubkey: user_pubkey,
+        status: 0,
+    };
+
+    let serialized_user = serialize_user_by_login(&user);
+
+    // ───────────────────────────────────────────────
+    // 8. Создаём PDA и записываем в него сериализованные данные
+    let full_seeds: &[&[u8]] = &[seed_bytes, &[bump]];
+    create_pda(
+        &ctx.accounts.user_by_login_pda,
+        &ctx.accounts.signer,
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+        full_seeds,
+        serialized_user.len() as u64,
+    )?;
+
+    write_to_pda(&ctx.accounts.user_by_login_pda, &serialized_user)?;
+
+    // ───────────────────────────────────────────────
+    // 9. Обновляем счётчик пользователей
+    write_user_counter_pda(
+        &ctx.accounts.user_counter,
+        ctx.program_id,
+        current_id + 1,
+    )?;
+
+    msg!("✅ Пользователь успешно зарегистрирован: {}", login);
+    Ok(())
+}
+
+
+/// Структура аккаунтов для регистрации нового пользователя
+#[derive(Accounts)]
+pub struct RegisterUserStepOne<'info> {
+    /// CHECK: Это просто подписант, валидируется Anchor по ключу и подписи
+    /// Подписант — новый пользователь, он платит за создание PDA
+    #[account(mut, signer)]
+    pub signer: AccountInfo<'info>,
+
+    /// CHECK: это PDA, проверяется вручную через сиды и ключ
+    /// PDA счётчика пользователей
+    #[account(mut)]
+    pub user_counter: AccountInfo<'info>,
+
+    /// CHECK: PDA-аккаунт пользователя, проверяется вручную через сид `"u=" + login`
+    /// Новый PDA-аккаунт пользователя по логину
+    #[account(mut)]
+    pub user_by_login_pda: AccountInfo<'info>,
+
+    /// Системная программа
+    pub system_program: Program<'info, System>,
+
+    /// Аккаунт получателя комиссии (проверяется по адресу)
+    /// CHECK: проверяется вручную по адресу
+    #[account(mut)]
+    pub fee_receiver: AccountInfo<'info>,
+}
+
+/// Проверяет, что логин состоит из латинских строчных букв, цифр и "_"
+/// и длина не превышает 30 символов
+pub fn validate_login(login: &str) -> Result<()> {
+    if login.len() > 30 {
+        return Err(error!(ErrorCode::InvalidLogin));
+    }
+
+    for ch in login.chars() {
+        if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+            return Err(error!(ErrorCode::InvalidLogin));
+        }
+    }
+
+    Ok(())
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
