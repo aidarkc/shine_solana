@@ -25,7 +25,9 @@ done
 sleep 2  # На всякий случай немного подождём
 
 echo "💸 Airdrop 10 SOL на $WALLET..."
-solana airdrop 10 $WALLET
+solana airdrop 10 HMww7YSVfwVm4i8sugqj7wyH26dqzHykzv3wzWwzEvPA
+
+solana airdrop 5 $WALLET
 
 echo "🔨 Сборка контракта..."
 anchor build
@@ -37,5 +39,6 @@ echo "✅ Готово!"
 
 # Не убиваем валидатор, чтобы он оставался запущенным
 echo "ℹ️ Валидатор всё ещё работает (PID $VALIDATOR_PID)"
-echo "Нажмите Ctrl+C, чтобы остановить его."
-wait $VALIDATOR_PID
+
+echo "ℹ️ Запускаем логи"
+solana logs

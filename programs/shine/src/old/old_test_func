@@ -1,0 +1,267 @@
+
+
+
+// todo удалить этот хоам не нужный
+
+
+
+
+
+/// Контекст вызова test_utils
+#[derive(Accounts)]
+pub struct TestContext<'info> {
+    /// Подписант транзакции — проверяется Anchor
+    /// CHECK: Только для чтения. Никаких операций записи не производится.
+    #[account(signer)]
+    pub signer: AccountInfo<'info>,
+
+    /// Аккаунт, который можно изменить
+    /// CHECK: Это PDA, чья валидность проверяется через seeds и signer
+    #[account(mut)]
+    pub writable_pda: AccountInfo<'info>,
+
+    /// Аккаунт, который можно только читать
+    /// CHECK: Только для чтения. Никаких операций записи не производится.
+    pub readonly_pda: AccountInfo<'info>,
+
+    /// Системная программа (нужна для создания)/// 
+    /// CHECK: Только для чтения. Никаких операций записи не производится.
+    pub system_program: Program<'info, System>,}
+
+/// Тестовая функция — просто выводим параметры
+pub fn test(
+    ctx: Context<TestContext>,     // контекст с аккаунтами
+    extra_pubkey: Pubkey,          // просто ключ (непроверяемый)
+    number: u64,                   // число
+    note: String,                  // строка
+    str_array: Vec<String>,        // массив строк переменной длинны
+) -> Result<()> {
+    // Печатаем всё в лог
+    msg!("Signer: {:?}", ctx.accounts.signer.key);
+    msg!("Writable PDA: {:?}", ctx.accounts.writable_pda.key);
+    msg!("Readonly PDA: {:?}", ctx.accounts.readonly_pda.key);
+    msg!("Extra pubkey: {:?}", extra_pubkey);
+    msg!("Number: {}", number);
+    msg!("Note: {}", note);
+    msg!("Array length: {}", str_array.len());
+    for (i, s) in str_array.iter().enumerate() {
+        msg!("str_array[{}] = {}", i, s);
+    }
+
+
+
+    // ---  Пример считывания аккаунту
+
+    let raw_bytes = safe_read_pda(&ctx.accounts.readonly_pda);
+    // Проверяем, что массив не пустой
+    require!(!raw_bytes.is_empty(), ErrorCode::EmptyPdaData);
+    msg!("Размер считанных данных: {}", raw_bytes.len());
+
+    // ───────────────────────────────
+    // Пробуем десериализовать данные
+    let user = deserialize_my_user(&*raw_bytes)?;
+
+    // ───────────────────────────────
+    // Выводим логин пользователя
+    msg!("✅ Десериализация успешна, логин: {}", user.login);
+
+    // Печатаем массив по байтам: [00 2A FF ...]
+    let mut output = String::new();
+    for (i, byte) in raw_bytes.iter().enumerate() {
+        use std::fmt::Write;
+
+        if i % 16 == 0 {
+            // Новая строка с адресом (опционально)
+            let _ = write!(output, "\n{:04X}: ", i);
+        }
+        let _ = write!(output, "{:02X} ", byte);
+    }
+    msg!("📦 Данные PDA:{}", output);
+
+
+
+
+
+
+
+
+    // --- пример создания объекта UserStruct его и сериализации    
+    // --- Создаём объект MyUserStruct
+    let user_struct = UserStruct {
+        user_id: number,                               // любое тестовое значение
+        login: note.clone(),                        // можно передать note.clone() или строку из массива
+        pubkey: ctx.accounts.signer.key().clone(),  // например, signer
+    };
+
+    // --- Сериализуем в массив байт
+    let serialized_bytes = serialize_my_user(&user_struct);
+
+
+
+    // ---  Пример создания PDA и записи в него данных из массива
+    let seed_string = format!("{}{}", USER_SEED_PREFIX, note);
+    let seed_bytes = seed_string.as_bytes();
+
+
+    // Поиск PDA
+    let seeds: &[&[u8]] = &[seed_bytes];
+    let (expected_pda, bump) = Pubkey::find_program_address(seeds, ctx.program_id);
+    // Проверка PDA
+    require!(ctx.accounts.writable_pda.key == &expected_pda, ErrorCode::InvalidPdaAddress);
+
+    // Полные сиды для подписи
+    let full_seeds: &[&[u8]] = &[seed_bytes, &[bump]];
+
+    msg!("serialized_bytes.len() as u64 {}", serialized_bytes.len() as u64);
+    // Запись
+    create_and_write_pda(
+        &ctx.accounts.writable_pda,
+        &ctx.accounts.signer,
+        &ctx.accounts.system_program,
+        ctx.program_id,
+        full_seeds,
+        serialized_bytes.clone(),
+        serialized_bytes.len() as u64,
+    )?;
+
+
+    Ok(())
+}
+
+
+
+
+///---------------------------------------------------------------------------------
+///
+///   СТРУКТУРА ПОЛЬЗОВАТЕЛЯ И ЕЁ СЕРИАЛИЗАЦИЯ И ДЕСЕРИАЛИЗАЦИЯ
+///
+/// --------------------------------------------------------------------------------
+ 
+/// Простая структура пользователя
+pub struct UserStruct {
+    //pub format_type: u32,   // 4 байта        не храним
+    pub user_id: u64,       // 8 байт
+    pub login: String,      // сначала длина, потом байты
+    pub pubkey: Pubkey,     // 32 байта
+}
+
+///    ------------  Сериализация -----------
+// Пример использования
+
+// let user_bytes = serialize_my_user(&some_user);
+// match deserialize_my_user(&user_bytes) {
+// Ok(user) => msg!("Десериализован логин: {}", user.login),
+// Err(e) => msg!("Ошибка: {}", e),
+// }
+
+/// Метод сериализации в Vec<u8>
+/// let user = MyUserStruct {
+///     format_type: 1,
+///     user_id: 42,
+///     login: String::from("sol_user"),
+///     pubkey: Pubkey::new_unique(),
+/// };
+/// 
+/// let bytes = serialize_my_user(&user);
+/// msg!("Сериализовано {} байт: {:?}", bytes.len(), bytes);
+pub fn serialize_my_user(user: &UserStruct) -> Vec<u8> {
+    let mut result = Vec::new();
+
+    // ───────────────
+    // 1. format_type (4 байта)
+    // ───────────────
+    result.extend_from_slice(&1u32.to_le_bytes());
+    //result.extend_from_slice(&user.format_type.to_le_bytes());  не храним
+
+    // ───────────────
+    // 2. user_id (8 байт)
+    // ───────────────
+    result.extend_from_slice(&user.user_id.to_le_bytes());
+
+    // ───────────────
+    // 3. login: сначала длина (u8), затем байты
+    // ───────────────
+    let login_bytes = user.login.as_bytes();
+    let login_len = login_bytes.len();
+
+    // Если логин длиннее 255 символов — ошибка (или обрежем)
+    let login_len_u8 = login_len.min(255) as u8;
+
+    result.push(login_len_u8); // длина
+    result.extend_from_slice(&login_bytes[..login_len_u8 as usize]); // строка
+
+    // ───────────────
+    // 4. Pubkey (32 байта)
+    // ───────────────
+    result.extend_from_slice(user.pubkey.as_ref());
+
+    result
+}
+///    ------------  Десериализация -----------
+
+/// Основная функция: определяет формат и вызывает нужную десериализацию
+pub fn deserialize_my_user(data: &[u8]) -> Result<UserStruct> {
+    // Проверяем, что в байтах хотя бы 4 байта под формат
+    if data.len() < 4 {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+
+    // Читаем первые 4 байта — тип формата
+    let format_type = u32::from_le_bytes(data[0..4].try_into().map_err(|_| ErrorCode::DeserializationError)?);
+
+    // Ветвление по типу формата
+    match format_type {
+        1 => deserialize_format_1(data),
+        // 2 => deserialize_format_2(data),
+        // 3 => ...
+        _ => Err(error!(ErrorCode::UnsupportedFormat)),
+    }
+}
+
+/// Десериализация данных формата 1:
+/// [0..4]  → format_type: u32
+/// [4..12] → user_id: u64
+/// [12..13] → длина логина: u8
+/// [13..(13+len)] → логин
+/// [..] → 32 байта pubkey
+pub fn deserialize_format_1(data: &[u8]) -> Result<UserStruct> {
+    // Оборачиваем всё в одну try-блок, чтобы перехватить любые ошибки
+    let result = (|| {
+        if data.len() < 4 + 8 + 1 + 32 {
+            return Err(ErrorCode::DeserializationError);
+        }
+
+        //let format_type = u32::from_le_bytes(data[0..4].try_into().unwrap());  не храним
+        let user_id = u64::from_le_bytes(data[4..12].try_into().unwrap());
+
+        let login_len = data[12] as usize;
+        let login_start = 13;
+        let login_end = login_start + login_len;
+
+        if data.len() < login_end + 32 {
+            return Err(ErrorCode::DeserializationError);
+        }
+
+        let login_bytes = &data[login_start..login_end];
+        let login = std::str::from_utf8(login_bytes)
+            .map_err(|_| ErrorCode::DeserializationError)?
+            .to_string();
+
+        let pubkey_start = login_end;
+        let pubkey_end = pubkey_start + 32;
+        let pubkey = Pubkey::try_from(&data[pubkey_start..pubkey_end])
+            .map_err(|_| ErrorCode::DeserializationError)?;
+
+
+        Ok(UserStruct {
+            user_id,
+            login,
+            pubkey,
+        })
+    })();
+
+    // Обернём ошибку, если любая из операций упала
+    result.map_err(|_| error!(ErrorCode::DeserializationError))
+}
+
+

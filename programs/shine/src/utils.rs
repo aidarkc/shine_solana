@@ -10,130 +10,7 @@ use std::str::FromStr;
 // Префикс для PDA пользователей по логину
 const USER_SEED_PREFIX: &str = "u=";
 // Постоянный адрес получателя комиссии    key3
-pub const REGISTRATION_FEE_RECEIVER: &str = "6bFc5Gz5qF172GQhK5HpDbWs8F6qcSxdHn5XqAstf1fY"; 
-
-
-/// Контекст вызова test_utils
-#[derive(Accounts)]
-pub struct TestContext<'info> {
-    /// Подписант транзакции — проверяется Anchor
-    /// CHECK: Только для чтения. Никаких операций записи не производится.
-    #[account(signer)]
-    pub signer: AccountInfo<'info>,
-
-    /// Аккаунт, который можно изменить
-    /// CHECK: Это PDA, чья валидность проверяется через seeds и signer
-    #[account(mut)]
-    pub writable_pda: AccountInfo<'info>,
-
-    /// Аккаунт, который можно только читать
-    /// CHECK: Только для чтения. Никаких операций записи не производится.
-    pub readonly_pda: AccountInfo<'info>,
-
-    /// Системная программа (нужна для создания)/// 
-    /// CHECK: Только для чтения. Никаких операций записи не производится.
-    pub system_program: Program<'info, System>,}
-
-/// Тестовая функция — просто выводим параметры
-pub fn test(
-    ctx: Context<TestContext>,     // контекст с аккаунтами
-    extra_pubkey: Pubkey,          // просто ключ (непроверяемый)
-    number: u64,                   // число
-    note: String,                  // строка
-    str_array: Vec<String>,        // массив строк переменной длинны
-) -> Result<()> {
-    // Печатаем всё в лог
-    msg!("Signer: {:?}", ctx.accounts.signer.key);
-    msg!("Writable PDA: {:?}", ctx.accounts.writable_pda.key);
-    msg!("Readonly PDA: {:?}", ctx.accounts.readonly_pda.key);
-    msg!("Extra pubkey: {:?}", extra_pubkey);
-    msg!("Number: {}", number);
-    msg!("Note: {}", note);
-    msg!("Array length: {}", str_array.len());
-    for (i, s) in str_array.iter().enumerate() {
-        msg!("str_array[{}] = {}", i, s);
-    }
-
-    
-
-// ---  Пример считывания аккаунту
-    
-    let raw_bytes = safe_read_pda(&ctx.accounts.readonly_pda);
-    // Проверяем, что массив не пустой
-    require!(!raw_bytes.is_empty(), ErrorCode::EmptyPdaData);
-    msg!("Размер считанных данных: {}", raw_bytes.len());
-
-    // ───────────────────────────────
-    // Пробуем десериализовать данные
-    let user = deserialize_my_user(&*raw_bytes)?;
-
-    // ───────────────────────────────
-    // Выводим логин пользователя
-    msg!("✅ Десериализация успешна, логин: {}", user.login);    
-    
-    // Печатаем массив по байтам: [00 2A FF ...]
-    let mut output = String::new();
-    for (i, byte) in raw_bytes.iter().enumerate() {
-        use std::fmt::Write;
-
-        if i % 16 == 0 {
-            // Новая строка с адресом (опционально)
-            let _ = write!(output, "\n{:04X}: ", i);
-        }
-        let _ = write!(output, "{:02X} ", byte);
-    }
-    msg!("📦 Данные PDA:{}", output);
-
-
-    
-    
-    
-    
-    
-    
-// --- пример создания объекта UserStruct его и сериализации    
-    // --- Создаём объект MyUserStruct
-    let user_struct = UserStruct {
-        user_id: number,                               // любое тестовое значение
-        login: note.clone(),                        // можно передать note.clone() или строку из массива
-        pubkey: ctx.accounts.signer.key().clone(),  // например, signer
-    };
-
-    // --- Сериализуем в массив байт
-     let serialized_bytes = serialize_my_user(&user_struct);
-
-
-
-    // ---  Пример создания PDA и записи в него данных из массива
-    let seed_string = format!("{}{}", USER_SEED_PREFIX, note);
-    let seed_bytes = seed_string.as_bytes();
-
-        
-    // Поиск PDA
-    let seeds: &[&[u8]] = &[seed_bytes];
-    let (expected_pda, bump) = Pubkey::find_program_address(seeds, ctx.program_id);
-    // Проверка PDA
-    require!(ctx.accounts.writable_pda.key == &expected_pda, ErrorCode::InvalidPdaAddress);
-
-    // Полные сиды для подписи
-    let full_seeds: &[&[u8]] = &[seed_bytes, &[bump]];
-
-    msg!("serialized_bytes.len() as u64 {}", serialized_bytes.len() as u64);
-    // Запись
-    create_and_write_pda(
-        &ctx.accounts.writable_pda,
-        &ctx.accounts.signer,
-        &ctx.accounts.system_program,
-        ctx.program_id,
-        full_seeds,
-        serialized_bytes.clone(),
-        serialized_bytes.len() as u64,
-    )?;
-    
-    
-    Ok(())
-}
-
+pub const REGISTRATION_FEE_RECEIVER: &str = "6bFc5Gz5qF172GQhK5HpDbWs8F6qcSxdHn5XqAstf1fY";
 
 
 
@@ -169,150 +46,16 @@ pub enum ErrorCode {
     /// Система уже инициализирована и не может быть инициализирована повторно!
     #[msg("Система уже инициализирована и не может быть инициализирована повторно!")]
     SystemAlreadyInitialized = 4000,
+
+    #[msg("Подписавший не совпадает с ожидаемым пользователем (это потому что пока временно можно регистрировать пользователя с другово аккаунта")]
+    InvalidSigner = 6005,
+
+    /// Не получилось создат ьпользователя, система уже перегружена, попробуйте поззже!"
+    #[msg("Не получилось создать пользователя, система уже перегружена, попробуйте поззже!")]
+    NoSuitableIdPda = 7003,
+
+
 }
-#[error_code]
-pub enum UserDataError {
-    #[msg("Формат данных не поддерживается")]
-    UnsupportedFormat = 7001,
-
-    #[msg("Ошибка при десериализации")]
-    DeserializationError = 7002,
-}
-
-///---------------------------------------------------------------------------------
-///
-///   СТРУКТУРА ПОЛЬЗОВАТЕЛЯ И ЕЁ СЕРИАЛИЗАЦИЯ И ДЕСЕРИАЛИЗАЦИЯ
-///
-/// --------------------------------------------------------------------------------
- 
-/// Простая структура пользователя
-pub struct UserStruct {
-    //pub format_type: u32,   // 4 байта        не храним
-    pub user_id: u64,       // 8 байт
-    pub login: String,      // сначала длина, потом байты
-    pub pubkey: Pubkey,     // 32 байта
-}
-
-///    ------------  Сериализация -----------
-// Пример использования
-
-// let user_bytes = serialize_my_user(&some_user);
-// match deserialize_my_user(&user_bytes) {
-// Ok(user) => msg!("Десериализован логин: {}", user.login),
-// Err(e) => msg!("Ошибка: {}", e),
-// }
-
-/// Метод сериализации в Vec<u8>
-/// let user = MyUserStruct {
-///     format_type: 1,
-///     user_id: 42,
-///     login: String::from("sol_user"),
-///     pubkey: Pubkey::new_unique(),
-/// };
-/// 
-/// let bytes = serialize_my_user(&user);
-/// msg!("Сериализовано {} байт: {:?}", bytes.len(), bytes);
-pub fn serialize_my_user(user: &UserStruct) -> Vec<u8> {
-    let mut result = Vec::new();
-
-    // ───────────────
-    // 1. format_type (4 байта)
-    // ───────────────
-    result.extend_from_slice(&1u32.to_le_bytes());
-    //result.extend_from_slice(&user.format_type.to_le_bytes());  не храним
-
-    // ───────────────
-    // 2. user_id (8 байт)
-    // ───────────────
-    result.extend_from_slice(&user.user_id.to_le_bytes());
-
-    // ───────────────
-    // 3. login: сначала длина (u8), затем байты
-    // ───────────────
-    let login_bytes = user.login.as_bytes();
-    let login_len = login_bytes.len();
-
-    // Если логин длиннее 255 символов — ошибка (или обрежем)
-    let login_len_u8 = login_len.min(255) as u8;
-
-    result.push(login_len_u8); // длина
-    result.extend_from_slice(&login_bytes[..login_len_u8 as usize]); // строка
-
-    // ───────────────
-    // 4. Pubkey (32 байта)
-    // ───────────────
-    result.extend_from_slice(user.pubkey.as_ref());
-
-    result
-}
-///    ------------  Десериализация -----------
-
-/// Основная функция: определяет формат и вызывает нужную десериализацию
-pub fn deserialize_my_user(data: &[u8]) -> Result<UserStruct> {
-    // Проверяем, что в байтах хотя бы 4 байта под формат
-    if data.len() < 4 {
-        return Err(error!(UserDataError::DeserializationError));
-    }
-
-    // Читаем первые 4 байта — тип формата
-    let format_type = u32::from_le_bytes(data[0..4].try_into().map_err(|_| UserDataError::DeserializationError)?);
-
-    // Ветвление по типу формата
-    match format_type {
-        1 => deserialize_format_1(data),
-        // 2 => deserialize_format_2(data),
-        // 3 => ...
-        _ => Err(error!(UserDataError::UnsupportedFormat)),
-    }
-}
-
-/// Десериализация данных формата 1:
-/// [0..4]  → format_type: u32
-/// [4..12] → user_id: u64
-/// [12..13] → длина логина: u8
-/// [13..(13+len)] → логин
-/// [..] → 32 байта pubkey
-pub fn deserialize_format_1(data: &[u8]) -> Result<UserStruct> {
-    // Оборачиваем всё в одну try-блок, чтобы перехватить любые ошибки
-    let result = (|| {
-        if data.len() < 4 + 8 + 1 + 32 {
-            return Err(UserDataError::DeserializationError);
-        }
-
-        //let format_type = u32::from_le_bytes(data[0..4].try_into().unwrap());  не храним
-        let user_id = u64::from_le_bytes(data[4..12].try_into().unwrap());
-
-        let login_len = data[12] as usize;
-        let login_start = 13;
-        let login_end = login_start + login_len;
-
-        if data.len() < login_end + 32 {
-            return Err(UserDataError::DeserializationError);
-        }
-
-        let login_bytes = &data[login_start..login_end];
-        let login = std::str::from_utf8(login_bytes)
-            .map_err(|_| UserDataError::DeserializationError)?
-            .to_string();
-
-        let pubkey_start = login_end;
-        let pubkey_end = pubkey_start + 32;
-        let pubkey = Pubkey::try_from(&data[pubkey_start..pubkey_end])
-            .map_err(|_| UserDataError::DeserializationError)?;
-
-
-        Ok(UserStruct {
-            user_id,
-            login,
-            pubkey,
-        })
-    })();
-
-    // Обернём ошибку, если любая из операций упала
-    result.map_err(|_| error!(UserDataError::DeserializationError))
-}
-
-
 
 
 
@@ -397,7 +140,7 @@ pub fn serialize_user_by_login(user: &UserByLogin) -> Vec<u8> {
 pub fn deserialize_user_by_login(data: &[u8]) -> Result<UserByLogin> {
     // Проверка длины
     if data.len() < 4 {
-        return Err(error!(UserDataError::DeserializationError));
+        return Err(error!(ErrorCode::DeserializationError));
     }
 
     // Считываем format_type
@@ -405,7 +148,7 @@ pub fn deserialize_user_by_login(data: &[u8]) -> Result<UserByLogin> {
 
     match format_type {
         1 => deserialize_user_by_login_format1(data),
-        _ => Err(error!(UserDataError::UnsupportedFormat)),
+        _ => Err(error!(ErrorCode::UnsupportedFormat)),
     }
 }
 
@@ -416,36 +159,36 @@ fn deserialize_user_by_login_format1(data: &[u8]) -> Result<UserByLogin> {
     let mut offset = 4; // пропускаем format_type
 
     // 1. login (длина + строка)
-    let login_len = data.get(offset).ok_or(UserDataError::DeserializationError)? as &u8;
+    let login_len = data.get(offset).ok_or(ErrorCode::DeserializationError)? as &u8;
     offset += 1;
 
     let login_end = offset + (*login_len as usize);
     if data.len() < login_end {
-        return Err(error!(UserDataError::DeserializationError));
+        return Err(error!(ErrorCode::DeserializationError));
     }
 
     let login = std::str::from_utf8(&data[offset..login_end])
-        .map_err(|_| error!(UserDataError::DeserializationError))?
+        .map_err(|_| error!(ErrorCode::DeserializationError))?
         .to_string();
     offset = login_end;
 
     // 2. id (u64)
     if data.len() < offset + 8 {
-        return Err(error!(UserDataError::DeserializationError));
+        return Err(error!(ErrorCode::DeserializationError));
     }
     let id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
     offset += 8;
 
     // 3. pubkey (32 байта)
     if data.len() < offset + 32 {
-        return Err(error!(UserDataError::DeserializationError));
+        return Err(error!(ErrorCode::DeserializationError));
     }
     let pubkey = Pubkey::new_from_array(data[offset..offset + 32].try_into().unwrap());
     offset += 32;
 
     // 4. status (u32)
     if data.len() < offset + 4 {
-        return Err(error!(UserDataError::DeserializationError));
+        return Err(error!(ErrorCode::DeserializationError));
     }
     let status = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
 
@@ -669,6 +412,7 @@ pub fn register_user_step_one(
 
     // ───────────────────────────────────────────────
     // 8. Создаём PDA и записываем в него сериализованные данные
+
     let full_seeds: &[&[u8]] = &[seed_bytes, &[bump]];
     create_pda(
         &ctx.accounts.user_by_login_pda,
@@ -870,7 +614,7 @@ pub fn create_pda<'info>(
     msg!("Создаём PDA-аккаунт на {} байт", space);
 
     // Добавляем запас под метаданные Solana (примерно 128 байт)
-    let full_space = space + 128;
+    let full_space = space;
 
     // Получаем минимальный баланс для аренды (чтобы аккаунт не удалили)
     let lamports = Rent::get()?.minimum_balance(full_space as usize);
@@ -994,4 +738,424 @@ pub fn safe_read_pda<'info>(pda_account: &AccountInfo<'info>) -> Vec<u8> {
             Vec::new()
         }
     }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// ───────────────────────────────────────────────────────────────────────
+/// Структуры и сериализация UserById
+/// ───────────────────────────────────────────────────────────────────────
+
+
+
+/// Константа для версии формата сериализации UserById
+pub const USER_BY_ID_FORMAT_V1: u32 = 1;
+
+
+
+
+/// Структура, описывающая одно устройство пользователя.
+///
+/// Содержит:
+/// - device_type: тип устройства (1 байт, например: 1 = телефон, 2 = ПК)
+/// - device_pubkey: подпись устройства (Pubkey, 32 байта)
+/// - x25519_pubkey: публичный ключ X25519 для шифрования (32 байта)
+pub struct DeviceInfo {
+    pub device_type: u8,
+    pub device_pubkey: Pubkey,
+    pub x25519_pubkey: Pubkey,
+}
+
+/// Структура, описывающая пользователя по его ID (а не логину).
+///
+/// Содержит:
+/// - id: уникальный числовой ID (8 байт)
+/// - login: строка (до 255 байт, храним длину + байты)
+/// - pubkey: подпись пользователя (32 байта)
+/// - device_count: количество устройств (1 байт)
+/// - devices: массив устройств (все устройства фиксированной длины)
+pub struct UserById {
+    pub id: u64,
+    pub login: String,
+    pub pubkey: Pubkey,
+    pub device_count: u8,
+    pub devices: Vec<DeviceInfo>,
+}
+
+
+
+
+
+
+
+/// 🔧 Сериализация
+/// Сериализует структуру UserById в массив байт для хранения в PDA.
+///
+/// Формат:
+/// [0..4]      = format_type (u32)
+/// [4..12]     = id (u64)
+/// [12]        = длина логина (u8)
+/// [13..]      = логин (байты)
+/// [...]       = pubkey (32 байта)
+/// [...]       = количество устройств (1 байт)
+/// [..]*N      = по 65 байт на каждое устройство
+pub fn serialize_user_by_id(user: &UserById) -> Vec<u8> {
+    let mut result = Vec::new();
+
+    // 1. format_type (4 байта)
+    result.extend_from_slice(&USER_BY_ID_FORMAT_V1.to_le_bytes());
+
+    // 2. id (8 байт)
+    result.extend_from_slice(&user.id.to_le_bytes());
+
+    // 3. login (длина + строка)
+    let login_bytes = user.login.as_bytes();
+    let login_len = login_bytes.len().min(255) as u8;
+    result.push(login_len);
+    result.extend_from_slice(&login_bytes[..login_len as usize]);
+
+    // 4. pubkey (32 байта)
+    result.extend_from_slice(user.pubkey.as_ref());
+
+    // 5. количество устройств (1 байт)
+    result.push(user.device_count);
+
+    // 6. сериализуем каждое устройство (65 байт на устройство)
+    for device in &user.devices {
+        result.push(device.device_type);
+        result.extend_from_slice(device.device_pubkey.as_ref());
+        result.extend_from_slice(device.x25519_pubkey.as_ref());
+    }
+
+    result
+}
+
+
+
+
+
+
+/// 🔄 Общая десериализация
+///
+/// Десериализует UserById по переданному массиву байт.
+///
+/// Сначала считывает первые 4 байта как `format_type`,
+/// затем вызывает нужную реализацию по формату.
+pub fn deserialize_user_by_id(data: &[u8]) -> Result<UserById> {
+    if data.len() < 4 {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+
+    let format_type = u32::from_le_bytes(data[0..4].try_into().unwrap());
+
+    match format_type {
+        USER_BY_ID_FORMAT_V1 => deserialize_user_by_id_format1(data),
+        _ => Err(error!(ErrorCode::UnsupportedFormat)),
+    }
+}
+
+
+
+
+
+
+
+
+
+/// 🧩 Десериализация первого формата
+///
+/// Десериализация UserById в формате V1 (основной формат).
+///
+/// См. структуру сериализации выше.
+fn deserialize_user_by_id_format1(data: &[u8]) -> Result<UserById> {
+    let mut offset = 4; // пропускаем формат
+
+    // 1. id
+    if data.len() < offset + 8 {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+    let id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+    offset += 8;
+
+    // 2. login
+    let login_len = data.get(offset).ok_or(ErrorCode::DeserializationError)? as &u8;
+    offset += 1;
+
+    let login_end = offset + (*login_len as usize);
+    if data.len() < login_end {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+    let login = std::str::from_utf8(&data[offset..login_end])
+        .map_err(|_| error!(ErrorCode::DeserializationError))?
+        .to_string();
+    offset = login_end;
+
+    // 3. pubkey
+    if data.len() < offset + 32 {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+    let pubkey = Pubkey::new_from_array(data[offset..offset + 32].try_into().unwrap());
+    offset += 32;
+
+    // 4. device_count
+    if data.len() < offset + 1 {
+        return Err(error!(ErrorCode::DeserializationError));
+    }
+    let device_count = data[offset];
+    offset += 1;
+
+    // 5. devices
+    let mut devices = Vec::new();
+    for _ in 0..device_count {
+        if data.len() < offset + 65 {
+            return Err(error!(ErrorCode::DeserializationError));
+        }
+
+        let device_type = data[offset];
+        let device_pubkey = Pubkey::new_from_array(data[offset + 1..offset + 33].try_into().unwrap());
+        let x25519_pubkey = Pubkey::new_from_array(data[offset + 33..offset + 65].try_into().unwrap());
+
+        devices.push(DeviceInfo {
+            device_type,
+            device_pubkey,
+            x25519_pubkey,
+        });
+
+        offset += 65;
+    }
+
+    Ok(UserById {
+        id,
+        login,
+        pubkey,
+        device_count,
+        devices,
+    })
+}
+
+
+
+
+
+
+
+
+
+
+
+/// ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+///             Добавление нового пользователя с одним устройством
+/// ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// ─────────────────────────────────────────────────────────────
+/// Константы для сидов PDA
+/// ─────────────────────────────────────────────────────────────
+
+/// Префикс для PDA по логину
+pub const LOGIN_SEED_PREFIX: &str = "login=";
+
+/// Префикс для PDA по ID
+pub const USER_ID_SEED_PREFIX: &str = "userId=";
+
+
+/// Структура аккаунтов для регистрации пользователя с одним устройством
+#[derive(Accounts)]
+pub struct RegisterUserWithOneDev<'info> {
+    /// CHECK: Подписант (владелец логина и устройства). Проверяется вручную через `.key == &user_pubkey`
+    #[account(mut, signer)]
+    pub signer: AccountInfo<'info>,
+
+    /// CHECK: PDA-счётчик количества пользователей. Проверяется вручную по сиду внутри функции
+    #[account(mut)]
+    pub user_counter: AccountInfo<'info>,
+
+    /// CHECK: PDA для UserByLogin: должен быть по сиду ["login=", login]. Проверяется вручную
+    #[account(mut)]
+    pub user_by_login_pda: AccountInfo<'info>,
+
+    /// CHECK: Кандидаты на PDA для UserById (всего 5 штук). Один из них должен совпасть по рассчитанному адресу
+    #[account(mut)]
+    pub id_pda_1: AccountInfo<'info>,
+    /// CHECK: Кандидат на PDA по ID
+    #[account(mut)]
+    pub id_pda_2: AccountInfo<'info>,
+    /// CHECK: Кандидат на PDA по ID
+    #[account(mut)]
+    pub id_pda_3: AccountInfo<'info>,
+    /// CHECK: Кандидат на PDA по ID
+    #[account(mut)]
+    pub id_pda_4: AccountInfo<'info>,
+    /// CHECK: Кандидат на PDA по ID
+    #[account(mut)]
+    pub id_pda_5: AccountInfo<'info>,
+
+    /// Стандартная системная программа
+    pub system_program: Program<'info, System>,
+
+    /// CHECK: Получатель комиссии. Проверяется вручную по жёстко заданному адресу
+    #[account(mut)]
+    pub fee_receiver: AccountInfo<'info>,
+}
+
+
+/// ─────────────────────────────────────────────────────────────
+/// Инструкция регистрации нового пользователя с одним устройством
+/// ─────────────────────────────────────────────────────────────
+pub fn register_user_with_one_dev(
+    ctx: Context<RegisterUserWithOneDev>,
+    login: String,                 // логин пользователя
+    user_pubkey: Pubkey,          // публичная подпись пользователя (совпадает с signer)
+    device_sign_pubkey: Pubkey,   // подпись устройства (Pubkey)
+    device_x25519_pubkey: Pubkey, // ключ шифрования устройства (X25519)
+) -> Result<()> {
+    // ───────────── ШАГ 1 ─────────────
+    // Проверка: signer должен совпадать с переданным user_pubkey
+
+    msg!("🔐 Регистрируем пользователя с логином: {}", login);
+
+    require!(ctx.accounts.signer.key == &user_pubkey, ErrorCode::InvalidSigner);
+
+    // ───────────── ШАГ 2 ─────────────
+    // Проверка валидности логина (длина и допустимые символы)
+    validate_login(&login)?;
+
+    // ───────────── ШАГ 3 ─────────────
+    // Запрещённые логины
+    let reserved = ["admin", "support", "solana"];
+    require!(!reserved.contains(&login.as_str()), ErrorCode::InvalidLogin);
+
+    // ───────────── ШАГ 4 ─────────────
+    // Генерация PDA по логину ("login=", login)
+    let login_seed_1 = LOGIN_SEED_PREFIX.as_bytes();
+    let login_seed_2 = login.as_bytes();
+    let (expected_login_pda, bump_login) = Pubkey::find_program_address(
+        &[login_seed_1, login_seed_2], ctx.program_id);
+    require!(ctx.accounts.user_by_login_pda.key == &expected_login_pda, ErrorCode::InvalidPdaAddress);
+
+    // ───────────── ШАГ 5 ─────────────
+    // Проверка: PDA по логину должен быть пустым
+    if ctx.accounts.user_by_login_pda.owner != &Pubkey::default() {
+        return Err(error!(ErrorCode::UserAlreadyExists));
+    }
+
+    // ───────────── ШАГ 6 ─────────────
+    // Перевод комиссии 0.01 SOL (10_000_000 лампортов)
+    let expected_receiver = Pubkey::from_str(REGISTRATION_FEE_RECEIVER)
+        .map_err(|_| error!(ErrorCode::InvalidLogin))?;
+    require!(ctx.accounts.fee_receiver.key == &expected_receiver, ErrorCode::InvalidPdaAddress);
+
+    let ix = system_instruction::transfer(
+        ctx.accounts.signer.key,
+        ctx.accounts.fee_receiver.key,
+        10_000_000,
+    );
+    invoke(&ix, &[
+        ctx.accounts.signer.clone(),
+        ctx.accounts.fee_receiver.clone(),
+        ctx.accounts.system_program.to_account_info(),
+    ])?;
+
+    // ───────────── ШАГ 7 ─────────────
+    // Получаем текущий id пользователя (из PDA-счётчика)
+    let current_id = read_user_counter_pda(&ctx.accounts.user_counter, ctx.program_id)?;
+    let new_id = current_id + 1;
+
+    // ───────────── ШАГ 8 ─────────────
+    // Формируем структуру UserByLogin со статусом 1
+    let user_login = UserByLogin {
+        login: login.clone(),
+        id: new_id,
+        pubkey: user_pubkey,
+        status: 1,
+    };
+    let serialized_login = serialize_user_by_login(&user_login);
+
+    // ───────────── ШАГ 9 ─────────────
+    // Формируем структуру UserById с одним устройством
+    let user_id = UserById {
+        id: new_id,
+        login: login.clone(),
+        pubkey: user_pubkey,
+        device_count: 1,
+        devices: vec![DeviceInfo {
+            device_type: 1,
+            device_pubkey: device_sign_pubkey,
+            x25519_pubkey: device_x25519_pubkey,
+        }],
+    };
+    let serialized_id = serialize_user_by_id(&user_id);
+
+    // ───────────── ШАГ 10 ─────────────
+    // Вычисляем PDA по ID: сиды ["userId=", id as string]
+    let id_seed_1 = USER_ID_SEED_PREFIX.as_bytes();
+    let id_seed_2_string = new_id.to_string();            // Вначале сохраняем строку в памяти а потом преобразуем дальше
+    let id_seed_2 = id_seed_2_string.as_bytes();
+    let (expected_id_pda, bump_id) = Pubkey::find_program_address(
+        &[id_seed_1, id_seed_2], ctx.program_id);
+
+    let id_pdas = [
+        &ctx.accounts.id_pda_1,
+        &ctx.accounts.id_pda_2,
+        &ctx.accounts.id_pda_3,
+        &ctx.accounts.id_pda_4,
+        &ctx.accounts.id_pda_5,
+    ];
+    let target_id_pda = id_pdas
+        .iter()
+        .find(|acc| acc.key == &expected_id_pda)
+        .ok_or_else(|| error!(ErrorCode::NoSuitableIdPda))?; // ⚠️ в будущем можно расширить систему
+
+    // ───────────── ШАГ 11 ─────────────
+    // Создаём PDA по логину и записываем туда данные
+    create_pda(
+        &ctx.accounts.user_by_login_pda,
+        &ctx.accounts.signer,
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+        &[login_seed_1, login_seed_2, &[bump_login]],
+        serialized_login.len() as u64,
+    )?;
+    write_to_pda(&ctx.accounts.user_by_login_pda, &serialized_login)?;
+
+    // ───────────── ШАГ 12 ─────────────
+    // Создаём PDA по ID и записываем туда UserById
+    create_pda(
+        target_id_pda,
+        &ctx.accounts.signer,
+        &ctx.accounts.system_program.to_account_info(),
+        ctx.program_id,
+        &[id_seed_1, id_seed_2, &[bump_id]],
+        200,
+    )?;
+    write_to_pda(target_id_pda, &serialized_id)?;
+
+    // ───────────── ШАГ 13 ─────────────
+    // Обновляем счётчик пользователей
+    write_user_counter_pda(&ctx.accounts.user_counter, ctx.program_id, new_id)?;
+
+    msg!("✅ Зарегистрирован login={} id={} с 1 устройством", login, new_id);
+    Ok(())
 }

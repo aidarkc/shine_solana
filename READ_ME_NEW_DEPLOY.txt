@@ -1,3 +1,39 @@
+https://api.devnet.solana.com
+
+
+проверить настройки
+solana config get
+
+настроить
+solana config set --url https://api.devnet.solana.com
+или
+solana config set --url http://127.0.0.1:8899
+
+потом
+solana airdrop 2 --keypair /home/ai/.config/solana/id.json
+и
+solana balance --keypair /home/ai/.config/solana/id.json
+
+
+
+anchor deploy \
+  --provider.cluster https://api.devnet.solana.com \
+  --provider.wallet /home/ai/.config/solana/id.json
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Шаг 1. Создай новый ключ для новой программы
 
 solana-keygen new --outfile target/deploy/user_registry-testnet-keypair.json
