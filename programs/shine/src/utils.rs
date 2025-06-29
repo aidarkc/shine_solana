@@ -21,38 +21,39 @@ pub const REGISTRATION_FEE_RECEIVER: &str = "6bFc5Gz5qF172GQhK5HpDbWs8F6qcSxdHn5
 
 #[error_code]
 pub enum ErrorCode {
+    /// Система уже инициализирована и не может быть инициализирована повторно!
+    #[msg("Система уже инициализирована и не может быть инициализирована повторно!")]
+    SystemAlreadyInitialized = 1000,
+    
     #[msg("PDA не содержит данных или не инициализирован")]
-    EmptyPdaData = 6002,
+    EmptyPdaData = 1002,
 
     #[msg("Пользователь уже зарегистрирован")]
-    UserAlreadyExists = 6003,
+    UserAlreadyExists = 1003,
 
     #[msg("Некорректный логин")]
-    InvalidLogin = 6004,
+    InvalidLogin = 1004,
 
     #[msg("Не совпадает PDA адрес")]
-    InvalidPdaAddress = 6006,
+    InvalidPdaAddress = 1006,
 
     #[msg("Формат данных не поддерживается")]
-    UnsupportedFormat = 7001,
+    UnsupportedFormat = 1011,
 
     #[msg("Ошибка при десериализации")]
-    DeserializationError = 7002,
+    DeserializationError = 1012,
 
     /// PDA уже существует, создание невозможно
     #[msg("PDA-аккаунт уже существует и не может быть создан повторно.")]
     PdaAlreadyExists = 1009,
 
-    /// Система уже инициализирована и не может быть инициализирована повторно!
-    #[msg("Система уже инициализирована и не может быть инициализирована повторно!")]
-    SystemAlreadyInitialized = 4000,
 
     #[msg("Подписавший не совпадает с ожидаемым пользователем (это потому что пока временно можно регистрировать пользователя с другово аккаунта")]
-    InvalidSigner = 6005,
+    InvalidSigner = 1005,
 
     /// Не получилось создат ьпользователя, система уже перегружена, попробуйте поззже!"
     #[msg("Не получилось создать пользователя, система уже перегружена, попробуйте поззже!")]
-    NoSuitableIdPda = 7003,
+    NoSuitableIdPda = 1010,
 
 
 }
