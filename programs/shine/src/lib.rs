@@ -2,10 +2,11 @@ use anchor_lang::prelude::*;
 
 
 
-mod utils;
+pub mod utils;
+pub mod users;
 
-// Подключаем модуль utils
-use utils::*;        // Импортируем все функции и структуры из него
+// Подключаем модуль users
+use users::*;        // Импортируем все функции и структуры из него
 
 
 declare_id!("5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t");
@@ -29,7 +30,7 @@ pub mod shine {
         login: String,
         pubkey: Pubkey,
     ) -> Result<()> {
-        utils::register_user_step_one(ctx, login, pubkey)
+        users::register_user_step_one(ctx, login, pubkey)
     }
 
 
@@ -37,7 +38,7 @@ pub mod shine {
     /// Одноразовая инициализация счётчика пользователей
     pub fn initialize_user_counter(ctx: Context<InitUserCounter>) -> Result<()> {
         // Вызов внутренней логики из утилит
-        utils::initialize_user_counter(
+        users::initialize_user_counter(
             &ctx.accounts.counter_pda,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -68,7 +69,7 @@ pub mod shine {
         device_sign_pubkey: Pubkey, // подпись устройства
         device_x25519_pubkey: Pubkey, // X25519 ключ для шифрования
     ) -> Result<()> {
-        utils::register_user_with_one_dev(
+        users::register_user_with_one_dev(
             ctx,
             login,
             pubkey,
