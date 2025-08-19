@@ -1,0 +1,5 @@
+anchor deploy --program-name shine_payments
+
+solana program show  92sgkgx7KHpbhQu81mNGHaKa7skJB7esArVdPM7paDSW --url http://127.0.0.1:8899
+
+solana address -k /home/ai/work/SOLANA/shine/target/deploy/shine_payments-keypair.json

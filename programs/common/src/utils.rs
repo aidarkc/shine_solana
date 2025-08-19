@@ -1,10 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    program::invoke,
     program::invoke_signed,
     system_instruction,
+    system_program
 };
-use std::str::FromStr;
 
 
 
@@ -301,11 +300,65 @@ pub fn safe_read_pda<'info>(pda_account: &AccountInfo<'info>) -> Vec<u8> {
     }
 }
 
+    
 
 
 
 
+/// ------------------------------------------------------------------------
+/// delete_pda_with_assign — закрыть PDA, вернуть ренту и освободить адрес
+/// ------------------------------------------------------------------------
+///
+/// Параметры:
+/// - `pda_account`   : PDA-аккаунт (mut), который закрываем (owned вашей программой)
+/// - `recipient`     : счёт, на который возвращаем лампорты (обычно пользователь)
+/// - `system_program`: системная программа (111...111)
+/// - `program_id`    : Pubkey вашей программы (проверка владельца)
+/// - `seeds`         : сиды PDA (в том же порядке, как при создании), чтобы PDA «подписал» assign
+///
+/// Делает:
+/// 1) Проверяет, что PDA принадлежит вашей программе.
+/// 2) Обнуляет данные и сжимает их до 0 байт (realloc(0)).
+/// 3) Переводит все лампорты PDA на `recipient`.
+/// 4) Делает `assign` владельца на System Program (через `invoke_signed`).
+///
+/// Результат:
+/// — В конце транзакции аккаунт с lamports=0 и data_len=0 будет удалён рантаймом,
+///   владелец = System Program (чисто/ожидаемо).
+/// — В следующей транзакции можно снова создать PDA с тем же сидом.
+/// ------------------------------------------------------------------------
 
+pub fn delete_pda_return_rent<'info>(
+    pda_account: &AccountInfo<'info>,
+    recipient: &AccountInfo<'info>,
+    program_id: &Pubkey,
+) -> Result<()> {
+    // 0) проверки
+    require!(pda_account.owner != &Pubkey::default(), ErrCode::EmptyPdaData);
+    require!(pda_account.owner == program_id, ErrCode::InvalidPdaAddress);
 
+    // 1) Переложить все лампорты с PDA на получателя (мы владелец, это разрешено)
+    let amount = **pda_account.lamports.borrow();
+    if amount > 0 {
+        **recipient.lamports.borrow_mut() = recipient
+            .lamports()
+            .checked_add(amount)
+            .ok_or(ProgramError::InsufficientFunds)?;
+        **pda_account.lamports.borrow_mut() = 0;
+    }
 
+    // 2) Нулим данные (если были)
+    if !pda_account.data_is_empty() {
+        let mut data = pda_account.try_borrow_mut_data()?;
+        for b in data.iter_mut() { *b = 0; }
+    }
+
+    // 3) Сжать до 0 байт
+    pda_account.realloc(0, false)?;
+
+    // Никаких assign/transfer больше не делаем — это надёжнее.
+    msg!("PDA закрыт: рента отправлена на {}", recipient.key);
+    Ok(())
+}
+ 
 

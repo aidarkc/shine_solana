@@ -1,12 +1,11 @@
 use anchor_lang::prelude::*;
 
-
-
-pub mod utils;
 pub mod users;
 
 // Подключаем модуль users
 use users::*;        // Импортируем все функции и структуры из него
+
+// use common::utils::*;
 
 
 declare_id!("5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t");
@@ -16,11 +15,6 @@ declare_id!("5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t");
 pub mod shine {
     use super::*;
 
-
-
-///---------------------------------------------------------------
-/// Дальше по делу :)
-/// --------------------------------------------------------------
 
 
 

@@ -1,12 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     program::invoke,
-    program::invoke_signed,
+    // program::invoke_signed,
     system_instruction,
 };
 use std::str::FromStr;
-use crate::utils::{create_and_write_pda, create_pda, safe_read_pda, write_to_pda};
-use crate::utils::*;
+use common::utils::{create_and_write_pda, create_pda, safe_read_pda, write_to_pda};
+use common::utils::ErrCode;
 
 
 // Префикс для PDA пользователей по логину
@@ -114,7 +114,7 @@ fn deserialize_user_by_login_format1(data: &[u8]) -> Result<UserByLogin> {
     let mut offset = 4; // пропускаем format_type
 
     // 1. login (длина + строка)
-    let login_len = data.get(offset).ok_or(crate::utils::ErrCode::DeserializationError)? as &u8;
+    let login_len = data.get(offset).ok_or(ErrCode::DeserializationError)? as &u8;
     offset += 1;
 
     let login_end = offset + (*login_len as usize);
@@ -190,7 +190,7 @@ pub fn read_user_counter_pda<'info>(
     }
 
     // Преобразуем 8 байт в u64
-    let value = u64::from_le_bytes(raw.try_into().map_err(|_| crate::utils::ErrCode::DeserializationError)?);
+    let value = u64::from_le_bytes(raw.try_into().map_err(|_| ErrCode::DeserializationError)?);
     Ok(value)
 }
 
@@ -603,7 +603,7 @@ fn deserialize_user_by_id_format1(data: &[u8]) -> Result<UserById> {
     offset += 8;
 
     // 2. login
-    let login_len = data.get(offset).ok_or(crate::utils::ErrCode::DeserializationError)? as &u8;
+    let login_len = data.get(offset).ok_or(ErrCode::DeserializationError)? as &u8;
     offset += 1;
 
     let login_end = offset + (*login_len as usize);
