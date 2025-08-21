@@ -68,9 +68,6 @@ use super::*;
 
 use anchor_lang::prelude::*;
 
-// pub const ALLOWED_INIT_CALLER: Pubkey =
-//     Pubkey::from_str("FUc28vNixp7F3nnkpGVt6nuJbgvJ4429v4B5wS52Df6P")
-//         .unwrap();
 
 /// ------------------------------------------
 /// init: создаёт PDA и записывает в него дефолтное состояние.
@@ -80,7 +77,7 @@ pub fn init(ctx: Context<Init>) -> Result<()> {
     let program_id = ctx.program_id;                              // ← адрес этой программы
 
     // 1. Проверка что вызывает именно разрешённый ключ
-    /* todo   пока все могут вызыватьно вообще можно добавить  - и вообще вопрос кто будет это вызывать ? :)
+    /* todo   пока все могут вызыватьно                                         !! но в итоге будет добавленна проверка что бы только дао могло вызвать эту функцию один раз
     require_keys_eq!(
         ctx.accounts.payer.key(),
         ALLOWED_INIT_CALLER,

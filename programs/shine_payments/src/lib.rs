@@ -44,6 +44,8 @@ pub mod shine_payments {
         investments::init(ctx) // делегируем в модуль payments
     }
 
+    // TODO: пока только шаблоны вызова основных функций
+
     /// invest — в начале читает состояние, в конце сохраняет (логика внутри модуля).
     pub fn invest(ctx: Context<UseState>, amount: u64) -> Result<()> {
         investments::invest(ctx, amount) // делегируем
@@ -60,6 +62,24 @@ pub mod shine_payments {
     }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    ///     ВРЕМЕННАЯ ФУНКЦИЯ      только для тестов и в итоговой версии её не будет
+    ///
     /// ===============================
     /// deleteInit — удалить PDA из init и вернуть ренту подписанту
     /// ===============================
@@ -81,7 +101,7 @@ pub mod shine_payments {
         )
     }
 }
-    /// Контекст для deleteInit
+    /// Контекст для deleteInit                         этого тоже в итоге не будет
     #[derive(Accounts)]
     pub struct DeleteInit<'info> {
         /// Подписант транзакции — ПОЛУЧАТЕЛЬ ренты
