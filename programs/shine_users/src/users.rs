@@ -1,64 +1,18 @@
-use anchor_lang::prelude::*;
+        use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     program::invoke,
-    program::invoke_signed,
+    // program::invoke_signed,
     system_instruction,
 };
 use std::str::FromStr;
+use common::utils::{create_and_write_pda, create_pda, safe_read_pda, write_to_pda};
+use common::utils::ErrCode;
 
 
 // Префикс для PDA пользователей по логину
 const USER_SEED_PREFIX: &str = "u=";
 // Постоянный адрес получателя комиссии    key3
 pub const REGISTRATION_FEE_RECEIVER: &str = "6bFc5Gz5qF172GQhK5HpDbWs8F6qcSxdHn5XqAstf1fY";
-
-
-
-
-
-
-/// сдесь коды всех ошибок 
-
-#[error_code]
-pub enum ErrorCode {
-    /// Система уже инициализирована и не может быть инициализирована повторно!
-    #[msg("Система уже инициализирована и не может быть инициализирована повторно!")]
-    SystemAlreadyInitialized = 1000,
-    
-    #[msg("PDA не содержит данных или не инициализирован")]
-    EmptyPdaData = 1002,
-
-    #[msg("Пользователь уже зарегистрирован")]
-    UserAlreadyExists = 1003,
-
-    #[msg("Некорректный логин")]
-    InvalidLogin = 1004,
-
-    #[msg("Не совпадает PDA адрес")]
-    InvalidPdaAddress = 1006,
-
-    #[msg("Формат данных не поддерживается")]
-    UnsupportedFormat = 1011,
-
-    #[msg("Ошибка при десериализации")]
-    DeserializationError = 1012,
-
-    /// PDA уже существует, создание невозможно
-    #[msg("PDA-аккаунт уже существует и не может быть создан повторно.")]
-    PdaAlreadyExists = 1009,
-
-
-    #[msg("Подписавший не совпадает с ожидаемым пользователем (это потому что пока временно можно регистрировать пользователя с другово аккаунта")]
-    InvalidSigner = 1005,
-
-    /// Не получилось создат ьпользователя, система уже перегружена, попробуйте поззже!"
-    #[msg("Не получилось создать пользователя, система уже перегружена, попробуйте поззже!")]
-    NoSuitableIdPda = 1010,
-
-
-}
-
-
 
 
 
@@ -141,7 +95,7 @@ pub fn serialize_user_by_login(user: &UserByLogin) -> Vec<u8> {
 pub fn deserialize_user_by_login(data: &[u8]) -> Result<UserByLogin> {
     // Проверка длины
     if data.len() < 4 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
 
     // Считываем format_type
@@ -149,7 +103,7 @@ pub fn deserialize_user_by_login(data: &[u8]) -> Result<UserByLogin> {
 
     match format_type {
         1 => deserialize_user_by_login_format1(data),
-        _ => Err(error!(ErrorCode::UnsupportedFormat)),
+        _ => Err(error!(ErrCode::UnsupportedFormat)),
     }
 }
 
@@ -160,36 +114,36 @@ fn deserialize_user_by_login_format1(data: &[u8]) -> Result<UserByLogin> {
     let mut offset = 4; // пропускаем format_type
 
     // 1. login (длина + строка)
-    let login_len = data.get(offset).ok_or(ErrorCode::DeserializationError)? as &u8;
+    let login_len = data.get(offset).ok_or(ErrCode::DeserializationError)? as &u8;
     offset += 1;
 
     let login_end = offset + (*login_len as usize);
     if data.len() < login_end {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
 
     let login = std::str::from_utf8(&data[offset..login_end])
-        .map_err(|_| error!(ErrorCode::DeserializationError))?
+        .map_err(|_| error!(ErrCode::DeserializationError))?
         .to_string();
     offset = login_end;
 
     // 2. id (u64)
     if data.len() < offset + 8 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
     offset += 8;
 
     // 3. pubkey (32 байта)
     if data.len() < offset + 32 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let pubkey = Pubkey::new_from_array(data[offset..offset + 32].try_into().unwrap());
     offset += 32;
 
     // 4. status (u32)
     if data.len() < offset + 4 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let status = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
 
@@ -227,16 +181,16 @@ pub fn read_user_counter_pda<'info>(
     // Проверяем, что переданный PDA соответствует сиду
     let seeds: &[&[u8]] = &[USER_COUNTER_SEED.as_bytes()];
     let (expected_pda, _) = Pubkey::find_program_address(seeds, program_id);
-    require!(counter_pda.key == &expected_pda, ErrorCode::InvalidPdaAddress);
+    require!(counter_pda.key == &expected_pda, ErrCode::InvalidPdaAddress);
 
     // Безопасное чтение данных
     let raw = safe_read_pda(counter_pda);
     if raw.len() != 8 {
-        return Err(error!(ErrorCode::EmptyPdaData)); // неверный размер
+        return Err(error!(ErrCode::EmptyPdaData)); // неверный размер
     }
 
     // Преобразуем 8 байт в u64
-    let value = u64::from_le_bytes(raw.try_into().map_err(|_| ErrorCode::DeserializationError)?);
+    let value = u64::from_le_bytes(raw.try_into().map_err(|_| ErrCode::DeserializationError)?);
     Ok(value)
 }
 
@@ -251,7 +205,7 @@ pub fn write_user_counter_pda<'info>(
     // Проверяем адрес PDA
     let seeds: &[&[u8]] = &[USER_COUNTER_SEED.as_bytes()];
     let (expected_pda, _) = Pubkey::find_program_address(seeds, program_id);
-    require!(counter_pda.key == &expected_pda, ErrorCode::InvalidPdaAddress);
+    require!(counter_pda.key == &expected_pda, ErrCode::InvalidPdaAddress);
 
     // Сериализуем u64 в 8 байт
     let bytes = value.to_le_bytes().to_vec();
@@ -290,12 +244,12 @@ pub fn initialize_user_counter<'info>(
     // Генерация PDA из сидов
     let seeds: &[&[u8]] = &[USER_COUNTER_SEED.as_bytes()];
     let (expected_pda, bump) = Pubkey::find_program_address(seeds, program_id);
-    require!(counter_pda.key == &expected_pda, ErrorCode::InvalidPdaAddress);
+    require!(counter_pda.key == &expected_pda, ErrCode::InvalidPdaAddress);
 
     // Проверка — если PDA уже существует, завершаем с ошибкой
     if counter_pda.owner != &Pubkey::default() {
         msg!("PDA Со счётчиком пользователей уже существует. Система уже инициализированна!");
-        return Err(error!(ErrorCode::SystemAlreadyInitialized));
+        return Err(error!(ErrCode::SystemAlreadyInitialized));
     }
 
     // Полные сиды
@@ -354,7 +308,7 @@ pub fn register_user_step_one(
     let reserved_logins = ["admin", "support", "solana"]; // можно расширить
     require!(
         !reserved_logins.contains(&login.as_str()),
-        ErrorCode::InvalidLogin
+        ErrCode::InvalidLogin
     );
 
     // ───────────────────────────────────────────────
@@ -364,22 +318,22 @@ pub fn register_user_step_one(
     let (expected_pda, bump) = Pubkey::find_program_address(&[seed_bytes], ctx.program_id);
     require!(
         &expected_pda == ctx.accounts.user_by_login_pda.key,
-        ErrorCode::InvalidPdaAddress
+        ErrCode::InvalidPdaAddress
     );
 
     // ───────────────────────────────────────────────
     // 4. Проверяем, что PDA ещё не инициализирован
     if ctx.accounts.user_by_login_pda.owner != &Pubkey::default() {
-        return Err(error!(ErrorCode::UserAlreadyExists));
+        return Err(error!(ErrCode::UserAlreadyExists));
     }
 
     // ───────────────────────────────────────────────
     // 5. Перевод 0.01 SOL комиссии за регистрацию
     let expected_receiver = Pubkey::from_str(REGISTRATION_FEE_RECEIVER)
-        .map_err(|_| error!(ErrorCode::InvalidLogin))?;
+        .map_err(|_| error!(ErrCode::InvalidLogin))?;
     require!(
         ctx.accounts.fee_receiver.key == &expected_receiver,
-        ErrorCode::InvalidPdaAddress
+        ErrCode::InvalidPdaAddress
     );
 
     let transfer_instruction = system_instruction::transfer(
@@ -470,12 +424,12 @@ pub struct RegisterUserStepOne<'info> {
 /// и длина не превышает 30 символов
 pub fn validate_login(login: &str) -> Result<()> {
     if login.len() > 30 {
-        return Err(error!(ErrorCode::InvalidLogin));
+        return Err(error!(ErrCode::InvalidLogin));
     }
 
     for ch in login.chars() {
         if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
-            return Err(error!(ErrorCode::InvalidLogin));
+            return Err(error!(ErrCode::InvalidLogin));
         }
     }
 
@@ -487,259 +441,6 @@ pub fn validate_login(login: &str) -> Result<()> {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-///----------------------------------------------------------------------------------------------------------
-///   Создание чтение  PDA
-///----------------------------------------------------------------------------------------------------------
-
-/// Создаёт PDA аккаунт (если его ещё нет), и записывает в него массив байт.
-///
-/// Аргументы:
-/// - `pda_account`: аккаунт, куда записываем
-/// - `signer`: кто платит за создание (обычно пользователь)
-/// - `program_id`: адрес текущей программы
-/// - `seeds`: слайс сидов, по которым создавался PDA
-/// - `data`: байты для записи
-/// - `space`: желаемый размер аккаунта
-pub fn create_and_write_pda<'info>(
-    pda_account: &AccountInfo<'info>,
-    signer: &AccountInfo<'info>,
-    system_program: &AccountInfo<'info>,
-    program_id: &Pubkey,
-    seeds: &[&[u8]],
-    data: Vec<u8>,
-    space: u64,
-) -> Result<()> {
-    // ───────────────────────────────────────────────
-    // 1. Проверяем, создан ли аккаунт (если нет — owner = default)
-    if pda_account.owner == &Pubkey::default() {
-        msg!("Создаём PDA с размером {} байт", space);
-
-        let space = space; //+ 128; // Добавляется запас под метаданные
-        // Вычисляем необходимую арендную плату
-        let lamports = Rent::get()?.minimum_balance(space as usize);
-
-        // Формируем инструкцию
-        let create_instr = system_instruction::create_account(
-            signer.key,
-            pda_account.key,
-            lamports,
-            space,
-            program_id,
-        );
-
-        // Выполняем инструкцию с подписью от PDA
-        invoke_signed(
-            &create_instr,
-            &[
-                signer.clone(),
-                pda_account.clone(),
-                system_program.clone(),
-            ],
-            &[&seeds],
-        )?;
-    }
-
-    // ───────────────────────────────────────────────
-    // 2. Пишем данные в аккаунт
-    let mut account_data = pda_account.try_borrow_mut_data()?;
-
-    let copy_len = std::cmp::min(account_data.len(), data.len());
-    account_data[..copy_len].copy_from_slice(&data[..copy_len]);
-
-    // Если хочешь дополнить оставшееся нулями — раскомментируй:
-    // for i in copy_len..account_data.len() {
-    //     account_data[i] = 0;
-    // }
-
-    msg!("Успешно записано {} байт в PDA", copy_len);
-    Ok(())
-}
-
-
-
-
-/// Создаёт PDA аккаунт (если его ещё нет).
-///
-/// ⚠️ Если аккаунт уже существует, выбрасывается ошибка.
-/// Используется внутри инструкций смарт-контракта.
-///
-/// Аргументы:
-/// - `pda_account`: аккаунт, который хотим создать (PDA)
-/// - `signer`: кто оплачивает создание аккаунта (обычно пользователь)
-/// - `system_program`: системная программа (`111...111`)
-/// - `program_id`: адрес текущей программы (используется для подписи PDA)
-/// - `seeds`: массив сидов, по которым вычислялся PDA
-/// - `space`: желаемый размер аккаунта в байтах (только данных, без метаданных)
-pub fn create_pda<'info>(
-    pda_account: &AccountInfo<'info>,
-    signer: &AccountInfo<'info>,
-    system_program: &AccountInfo<'info>,
-    program_id: &Pubkey,
-    seeds: &[&[u8]],
-    space: u64,
-) -> Result<()> {
-    // ───────────────────────────────────────────────
-    // 1. Проверяем, существует ли аккаунт
-    if pda_account.owner != &Pubkey::default() {
-        // Если владелец не равен Pubkey::default, значит аккаунт уже создан
-        // Возвращаем ошибку с пояснением
-        return Err(error!(ErrorCode::PdaAlreadyExists));
-    }
-
-    // ───────────────────────────────────────────────
-    // 2. Логируем, что будем создавать PDA
-    msg!("Создаём PDA-аккаунт на {} байт", space);
-
-    // Добавляем запас под метаданные Solana (примерно 128 байт)
-    let full_space = space;
-
-    // Получаем минимальный баланс для аренды (чтобы аккаунт не удалили)
-    let lamports = Rent::get()?.minimum_balance(full_space as usize);
-
-    // ───────────────────────────────────────────────
-    // 3. Создаём инструкцию system_program для создания аккаунта
-    let create_instr = system_instruction::create_account(
-        signer.key,         // от имени кого
-        pda_account.key,    // для какого PDA
-        lamports,           // сколько лампортов перевести
-        full_space,         // сколько байт выделить
-        program_id,         // кто будет владельцем PDA
-    );
-
-    // ───────────────────────────────────────────────
-    // 4. Выполняем инструкцию с подписью PDA (через сиды)
-    invoke_signed(
-        &create_instr,
-        &[
-            signer.clone(),
-            pda_account.clone(),
-            system_program.clone(),
-        ],
-        &[&seeds], // PDA сиды → для подписи
-    )?;
-
-    Ok(())
-}
-
-/// Записывает массив байт в PDA аккаунт (в начало data-секции).
-///
-/// ⚠️ Убедись, что PDA был передан как `#[account(mut)]`
-/// ⚠️ Эта функция ничего не создаёт, только пишет.
-///
-/// Аргументы:
-/// - `pda_account`: аккаунт, в который пишем (должен быть mut)
-/// - `data`: бинарный массив, который нужно записать
-pub fn write_to_pda<'info>(
-    pda_account: &AccountInfo<'info>,
-    data: &[u8],
-) -> Result<()> {
-    // ───────────────────────────────────────────────
-    // 1. Получаем доступ к данным PDA (на запись)
-    let mut account_data = pda_account.try_borrow_mut_data()?;
-
-    // ───────────────────────────────────────────────
-    // 2. Вычисляем сколько байт реально можно записать
-    // (на случай, если data длиннее, чем выделено место)
-    let copy_len = std::cmp::min(account_data.len(), data.len());
-
-    // ───────────────────────────────────────────────
-    // 3. Копируем данные в аккаунт (с самого начала)
-    account_data[..copy_len].copy_from_slice(&data[..copy_len]);
-
-    // Логируем, сколько байт записано
-    msg!("Успешно записано {} байт в PDA", copy_len);
-
-    Ok(())
-}
-
-
-
-
-
-
-
-
-
-
-/// ------------------------------------------------------------------------
-/// safe_read_pda ‒ «безопасное чтение PDA»
-/// ------------------------------------------------------------------------
-///
-/// * Принимает:   ссылку на `AccountInfo<'info>` PDA-аккаунта.
-/// * Возвращает:  `Vec<u8>` с данными аккаунта.  
-///                Если аккаунта нет или его данные пусты — возвращается `Vec::new()`
-///                длиной 0 байт.
-///
-/// Как работает ───────────────────────────────────────────────────────────
-/// 1. Проверяем, что аккаунт **инициализирован**: у не-инициализированного
-///    owner = Pubkey::default(). Если owner нулевой — сразу отдаём пустой вектор.
-/// 2. Если длина буфера == 0 (Anchor helper `data_is_empty()`), тоже отдаём пустой.
-/// 3. Пытаемся безопасно (`try_borrow_data`) получить ссылку на данные.
-///    - Успех → копируем их в Vec и возвращаем.
-///    - Ошибка (например, конфликт borrow) → логируем и возвращаем пустой Vec.
-///
-/// пример использования 
-/// let raw_bytes = safe_read_pda(&ctx.accounts.readonly_pda);
-/// require!(!raw_bytes.is_empty(), ErrorCode::EmptyPdaData);
-/// msg!("Размер считанных данных: {}", raw_bytes.len());
-/// ------------------------------------------------------------------------
-pub fn safe_read_pda<'info>(pda_account: &AccountInfo<'info>) -> Vec<u8> {
-    // ─────────────────────────────────────────────────────────────────────
-    // 1) Аккаунт Н*Е* СУЩЕСТВУЕТ или не инициализирован:
-    // owner == Pubkey::default() (в Solana нулевой owner у пустого счёта)
-    // ─────────────────────────────────────────────────────────────────────
-    if pda_account.owner == &Pubkey::default() {
-        msg!("safe_read_pda: аккаунт не инициализирован ‒ возвращаем пустой массив");
-        return Vec::new(); // []
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 2) У аккаунта нет данных (длина 0) — тоже считаем «пустым»
-    // ─────────────────────────────────────────────────────────────────────
-    if pda_account.data_is_empty() {
-        msg!("safe_read_pda: у аккаунта data_len == 0 ‒ возвращаем пустой массив");
-        return Vec::new();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 3) Пытаемся безопасно забрать буфер данных; ошибки перехватываем
-    // ─────────────────────────────────────────────────────────────────────
-    match pda_account.try_borrow_data() {
-        Ok(data_ref) => {
-            // to_vec() копирует bytes → Vec<u8>, чтобы дальше работать без borrow-лифа
-            data_ref.to_vec()
-        }
-        Err(e) => {
-            // Ошибка при borrow (например, уже есть активное мутабельное заимствование)
-            msg!("safe_read_pda: ошибка borrow_data ({:?}) ‒ возвращаем пустой массив", e);
-            Vec::new()
-        }
-    }
-}
 
 
 
@@ -867,14 +568,14 @@ pub fn serialize_user_by_id(user: &UserById) -> Vec<u8> {
 /// затем вызывает нужную реализацию по формату.
 pub fn deserialize_user_by_id(data: &[u8]) -> Result<UserById> {
     if data.len() < 4 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
 
     let format_type = u32::from_le_bytes(data[0..4].try_into().unwrap());
 
     match format_type {
         USER_BY_ID_FORMAT_V1 => deserialize_user_by_id_format1(data),
-        _ => Err(error!(ErrorCode::UnsupportedFormat)),
+        _ => Err(error!(ErrCode::UnsupportedFormat)),
     }
 }
 
@@ -896,34 +597,34 @@ fn deserialize_user_by_id_format1(data: &[u8]) -> Result<UserById> {
 
     // 1. id
     if data.len() < offset + 8 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
     offset += 8;
 
     // 2. login
-    let login_len = data.get(offset).ok_or(ErrorCode::DeserializationError)? as &u8;
+    let login_len = data.get(offset).ok_or(ErrCode::DeserializationError)? as &u8;
     offset += 1;
 
     let login_end = offset + (*login_len as usize);
     if data.len() < login_end {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let login = std::str::from_utf8(&data[offset..login_end])
-        .map_err(|_| error!(ErrorCode::DeserializationError))?
+        .map_err(|_| error!(ErrCode::DeserializationError))?
         .to_string();
     offset = login_end;
 
     // 3. pubkey
     if data.len() < offset + 32 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let pubkey = Pubkey::new_from_array(data[offset..offset + 32].try_into().unwrap());
     offset += 32;
 
     // 4. device_count
     if data.len() < offset + 1 {
-        return Err(error!(ErrorCode::DeserializationError));
+        return Err(error!(ErrCode::DeserializationError));
     }
     let device_count = data[offset];
     offset += 1;
@@ -932,7 +633,7 @@ fn deserialize_user_by_id_format1(data: &[u8]) -> Result<UserById> {
     let mut devices = Vec::new();
     for _ in 0..device_count {
         if data.len() < offset + 65 {
-            return Err(error!(ErrorCode::DeserializationError));
+            return Err(error!(ErrCode::DeserializationError));
         }
 
         let device_type = data[offset];
@@ -1037,7 +738,7 @@ pub fn register_user_with_one_dev(
 
     msg!("🔐 Регистрируем пользователя с логином: {}", login);
 
-    require!(ctx.accounts.signer.key == &user_pubkey, ErrorCode::InvalidSigner);
+    require!(ctx.accounts.signer.key == &user_pubkey, ErrCode::InvalidSigner);
 
     // ───────────── ШАГ 2 ─────────────
     // Проверка валидности логина (длина и допустимые символы)
@@ -1046,7 +747,7 @@ pub fn register_user_with_one_dev(
     // ───────────── ШАГ 3 ─────────────
     // Запрещённые логины
     let reserved = ["admin", "support", "solana"];
-    require!(!reserved.contains(&login.as_str()), ErrorCode::InvalidLogin);
+    require!(!reserved.contains(&login.as_str()), ErrCode::InvalidLogin);
 
     // ───────────── ШАГ 4 ─────────────
     // Генерация PDA по логину ("login=", login)
@@ -1054,19 +755,19 @@ pub fn register_user_with_one_dev(
     let login_seed_2 = login.as_bytes();
     let (expected_login_pda, bump_login) = Pubkey::find_program_address(
         &[login_seed_1, login_seed_2], ctx.program_id);
-    require!(ctx.accounts.user_by_login_pda.key == &expected_login_pda, ErrorCode::InvalidPdaAddress);
+    require!(ctx.accounts.user_by_login_pda.key == &expected_login_pda, ErrCode::InvalidPdaAddress);
 
     // ───────────── ШАГ 5 ─────────────
     // Проверка: PDA по логину должен быть пустым
     if ctx.accounts.user_by_login_pda.owner != &Pubkey::default() {
-        return Err(error!(ErrorCode::UserAlreadyExists));
+        return Err(error!(ErrCode::UserAlreadyExists));
     }
 
     // ───────────── ШАГ 6 ─────────────
     // Перевод комиссии 0.01 SOL (10_000_000 лампортов)
     let expected_receiver = Pubkey::from_str(REGISTRATION_FEE_RECEIVER)
-        .map_err(|_| error!(ErrorCode::InvalidLogin))?;
-    require!(ctx.accounts.fee_receiver.key == &expected_receiver, ErrorCode::InvalidPdaAddress);
+        .map_err(|_| error!(ErrCode::InvalidLogin))?;
+    require!(ctx.accounts.fee_receiver.key == &expected_receiver, ErrCode::InvalidPdaAddress);
 
     let ix = system_instruction::transfer(
         ctx.accounts.signer.key,
@@ -1127,7 +828,7 @@ pub fn register_user_with_one_dev(
     let target_id_pda = id_pdas
         .iter()
         .find(|acc| acc.key == &expected_id_pda)
-        .ok_or_else(|| error!(ErrorCode::NoSuitableIdPda))?; // ⚠️ в будущем можно расширить систему
+        .ok_or_else(|| error!(ErrCode::NoSuitableIdPda))?; // ⚠️ в будущем можно расширить систему
 
     // ───────────── ШАГ 11 ─────────────
     // Создаём PDA по логину и записываем туда данные
@@ -1160,3 +861,4 @@ pub fn register_user_with_one_dev(
     msg!("✅ Зарегистрирован login={} id={} с 1 устройством", login, new_id);
     Ok(())
 }
+

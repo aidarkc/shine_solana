@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ru">
+    <head>
+        <meta name="robots" content="noindex, nofollow">
+        <meta charset="UTF-8" />
+    <title>Shine Payments — Phantom demo (devnet, deep logs)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 20px; }
+    h1 { font-size: 18px; margin-bottom: 12px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+    button:hover { background: #f5f5f5; }
+    #log {
+    background: #0a0a0a; color: #d1d5db; padding: 12px; border-radius: 10px;
+    min-height: 220px; max-height: 60vh; overflow: auto; line-height: 1.4; white-space: pre-wrap;
+    box-shadow: inset 0 0 0 1px #222;
+}
+    .muted { color: #6b7280; }
+    .ok { color: #86efac; }
+    .err { color: #fca5a5; }
+
+    /* ——— banner с логотипом и предупреждением ——— */
+    .banner {
+        display: flex; align-items: center; gap: 14px;
+        padding: 12px 14px; margin: 12px 0 18px;
+        border: 1px solid #f1e5a8; border-radius: 12px;
+        background: #fffbe6; color: #7a5d00;
+    }
+    .banner img { width: 44px; height: 44px; border-radius: 8px; flex: 0 0 auto; }
+    .banner .txt { line-height: 1.35; }
+    .banner .txt b { font-weight: 700; }
+    .banner .en { margin-top: 6px; color: #6b7280; font-size: 13px; }
+
+</style>
+</head>
+<body>
+<!-- DEV BANNER (logo + RU/EN notice) -->
+<div class="banner" role="note" aria-label="Dev notice">
+    <img src="./shine_nft_logo_256.png" alt="Shine logo">
+    <div class="txt">
+        <div><b>ВНИМАНИЕ:</b> это тестовая страница для внутренней разработки. Я разбираюсь и пишу смарт-контракт и dApp для будущего токена и тестирую его работу в Devnet и подключение кошелька Phantom. Страница не является рабочим продуктом и предназначена только для внутренних тестов.</div>
+        <div class="en"><b>NOTICE:</b> this is a development test page. I’m building a smart contract and dApp for a future token and testing it on Devnet and Phantom wallet connection. This page is not a live product and is intended for internal testing only.</div>
+    </div>
+</div>
+
+<h1>Shine Payments — Phantom wallet (devnet)</h1>
+
+<div class="row">
+    <button id="btnConnect">Connect Phantom</button>
+    <button id="btnInfo"    disabled>Показать адрес и баланс</button>
+    <button id="btnAirdrop" disabled>Airdrop 1 SOL (devnet)</button>
+    <button id="btnInit"    disabled>Выполнить init()</button>
+    <button id="btn-delete-init"  disabled>🗑️ Удалить PDA (delete_init)</button>
+</div>
+
+<div class="muted">
+    В Phantom выбери сеть <b>Devnet</b>. Логи ниже и в консоли (F12 → Console).
+</div>
+
+<pre id="log"></pre>
+
+<!-- Единственная зависимость: web3.js -->
+<script src="https://unpkg.com/@solana/web3.js@1.95.0/lib/index.iife.min.js"></script>
+<script>
+    (async () => {
+    const logEl = document.getElementById("log");
+    const autoScroll = () => { logEl.scrollTop = logEl.scrollHeight; };
+    const log = (...a) => { console.log(...a); logEl.textContent += a.join(" ") + "\n"; autoScroll(); };
+    const logOk  = (...a) => log('%c' + a.join(" "), 'color:#86efac');
+    const logErr = (...a) => log('%c' + a.join(" "), 'color:#fca5a5');
+
+    // ===== ПАРАМЕТРЫ ПРОЕКТА =====
+    const RPC_URL    = "https://api.devnet.solana.com";
+    const PROGRAM_ID = new solanaWeb3.PublicKey("92sgkgx7KHpbhQu81mNGHaKa7skJB7esArVdPM7paDSW");
+    const STATE_SEED = "shine_investments_state";
+
+    // Лучше "processed" для симуляций + "confirmed" для подтверждений
+    const connection = new solanaWeb3.Connection(RPC_URL, { commitment: "confirmed" });
+    const enc = new TextEncoder();
+
+    let provider = null;       // Phantom provider (window.solana)
+    let walletPubkey = null;   // PublicKey пользователя из Phantom
+    let logsSubId = null;      // id подписки на логи программы
+
+    // ===== УТИЛИТЫ ОШИБОК/ЛОГОВ =====
+    function safeJson(v) {
+    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+    function printRpcError(prefix, e) {
+    // Структура ошибок Solana/Anchor часто лежит в e, e.message, e.data, e.logs, e.code
+    logErr(prefix);
+    if (!e) return;
+
+    if (e.message) logErr("message:", e.message);
+    if (e.code !== undefined) logErr("code:", e.code);
+    if (e.name) logErr("name:", e.name);
+
+    // web3.js/JSON-RPC иногда кладёт это сюда:
+    if (e.data) {
+    if (e.data.logs) {
+    logErr("logs:");
+    (e.data.logs || []).forEach(l => logErr("  " + l));
+}
+    if (e.data.err) {
+    logErr("rpc err:", safeJson(e.data.err));
+}
+}
+
+    // Некоторые кошельки/обёртки кладут логи прямо в e.logs
+    if (e.logs) {
+    logErr("logs:");
+    (e.logs || []).forEach(l => logErr("  " + l));
+}
+
+    // Стек — в конце
+    if (e.stack) {
+    logErr("stack:\n" + e.stack);
+}
+}
+
+    async function simulateAndLog(tx) {
+    // Симуляция перед отправкой — ключ к пониманию, где падает инструкция.
+    try {
+    const sim = await connection.simulateTransaction(tx, {
+    sigVerify: false,           // подпись не требуется
+    commitment: "processed"
+});
+    const v = sim.value;
+    log("🔎 simulate result — err:", safeJson(v.err));
+    if (v.logs?.length) {
+    log("🪵 simulate logs:");
+    v.logs.forEach(l => log("  " + l));
+}
+    if (v.unitsConsumed !== undefined) {
+    log("⛽ compute units (simulate):", v.unitsConsumed);
+}
+    return v;
+} catch (e) {
+    printRpcError("❌ Ошибка simulateTransaction:", e);
+    return null;
+}
+}
+
+    async function confirmAndLog(signature, blockhashCtx) {
+    try {
+    const { blockhash, lastValidBlockHeight } = blockhashCtx;
+    log("🧱 confirm with blockhash/lastValid:", blockhash, "/", lastValidBlockHeight);
+    const res = await connection.confirmTransaction(
+{ signature, blockhash, lastValidBlockHeight },
+    "confirmed"
+    );
+    log("📬 confirmation status:", safeJson(res.value));
+    return res.value;
+} catch (e) {
+    printRpcError("❌ Ошибка confirmTransaction:", e);
+    return null;
+}
+}
+
+    async function getSigStatus(signature) {
+    try {
+    const st = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+    log("🧾 signature status:", safeJson(st?.value));
+    return st?.value;
+} catch (e) {
+    printRpcError("❌ Ошибка getSignatureStatus:", e);
+}
+}
+
+    // ===== Anchor discriminator (8 байт) =====
+    async function anchorDiscriminator8(name) {
+    const hash = await crypto.subtle.digest("SHA-256", enc.encode("global:" + name));
+    return new Uint8Array(hash).slice(0, 8);
+}
+
+    // ===== PDA =====
+    async function getStatePda() {
+    const [pda] = await solanaWeb3.PublicKey.findProgramAddress(
+    [enc.encode(STATE_SEED)],
+    PROGRAM_ID
+    );
+    return pda;
+}
+
+    // ===== Отправка через Phantom с расширенным логированием =====
+    async function sendViaPhantom(tx, blockhashCtx) {
+        // Вариант с signAndSendTransaction вернёт сразу signature,
+        // но иногда теряются preflight-детали. Мы дополнительно логируем simulate.
+        // Обязательно: транзакция без подписей, место под Lighthouse-инструкции.
+        await simulateAndLog(tx); // можно оставить, подпись не требуется
+        if (!provider.signAndSendTransaction) throw new Error("Phantom не поддерживает signAndSendTransaction");
+        const {signature} = await provider.signAndSendTransaction(tx);
+        logOk("✍️ отправлено, сигнатура:", signature);
+        await confirmAndLog(signature, blockhashCtx);
+        await getSigStatus(signature);
+        return signature;
+
+    }
+
+    function setButtonsEnabled(connected) {
+    document.getElementById("btnInfo").disabled    = !connected;
+    document.getElementById("btnAirdrop").disabled = !connected;
+    document.getElementById("btnInit").disabled    = !connected;
+    document.getElementById("btn-delete-init").disabled = !connected;
+}
+
+    // ===== CONNECT =====
+    document.getElementById("btnConnect").addEventListener("click", async () => {
+    try {
+    if (!window.solana || !window.solana.isPhantom) {
+    logErr("❌ Phantom не найден. Установи расширение Phantom Wallet.");
+    return;
+}
+    provider = window.solana;
+
+    // Подключаемся ТОЛЬКО по клику пользователя:
+    log("🔌 Ожидаем подключение Phantom…");
+    await provider.connect(); // без onlyIfTrusted — это уже явный жест пользователя
+
+    walletPubkey = provider.publicKey;
+    logOk("✅ Подключено:", walletPubkey.toBase58());
+    setButtonsEnabled(true);
+
+    // Подписка на логи программы — помогает увидеть то, что в simulate/confirm могло не попасть
+    try {
+    if (logsSubId) {
+    await connection.removeOnLogsListener(logsSubId);
+    logsSubId = null;
+}
+    logsSubId = connection.onLogs(PROGRAM_ID, (ev) => {
+    log("🛰 onLogs:", ev.signature, "err:", safeJson(ev.err));
+    (ev.logs || []).forEach(l => log("  " + l));
+}, "confirmed");
+    log("📡 Подписка на логи программы включена.");
+} catch (e) {
+    printRpcError("⚠️ Не удалось подписаться на логи программы:", e);
+}
+
+    provider.on?.("disconnect", async () => {
+    log("🔌 Отключено");
+    setButtonsEnabled(false);
+    walletPubkey = null;
+    if (logsSubId) {
+    try { await connection.removeOnLogsListener(logsSubId); } catch {}
+    logsSubId = null;
+}
+});
+} catch (e) {
+    printRpcError("❌ Connect error:", e);
+}
+});
+
+    // ===== INFO =====
+    document.getElementById("btnInfo").addEventListener("click", async () => {
+    try {
+    if (!walletPubkey) throw new Error("Сначала подключи Phantom.");
+    const balanceLamports = await connection.getBalance(walletPubkey, "processed");
+    const statePda = await getStatePda();
+    log("👛 Кошелёк:", walletPubkey.toBase58());
+    log("💰 Баланс:", balanceLamports / solanaWeb3.LAMPORTS_PER_SOL, "SOL");
+    log("📦 statePda:", statePda.toBase58());
+    log("🌐 RPC:", RPC_URL);
+} catch (e) {
+    printRpcError("❌ Ошибка INFO:", e);
+}
+});
+
+    // ===== AIRDROP (devnet) =====
+    document.getElementById("btnAirdrop").addEventListener("click", async () => {
+    try {
+    if (!walletPubkey) throw new Error("Сначала подключи Phantom.");
+    log("⛽ Запрос airdrop 1 SOL на", walletPubkey.toBase58());
+    const sig = await connection.requestAirdrop(walletPubkey, 1 * solanaWeb3.LAMPORTS_PER_SOL);
+    log("⏳ confirm airdrop…");
+    const { value: ctx } = await connection.getLatestBlockhashAndContext("processed");
+    await confirmAndLog(sig, ctx);
+    logOk("✅ Airdrop tx:", sig);
+    const bal = await connection.getBalance(walletPubkey);
+    log("💰 Новый баланс:", bal / solanaWeb3.LAMPORTS_PER_SOL, "SOL");
+} catch (e) {
+    printRpcError("❌ Ошибка airdrop:", e);
+}
+});
+
+    // ===== INIT() =====
+    document.getElementById("btnInit").addEventListener("click", async () => {
+    try {
+    if (!walletPubkey) throw new Error("Сначала подключи Phantom.");
+
+    const statePda = await getStatePda();
+    log("🚀 Вызываем init()");
+    log("   payer:    ", walletPubkey.toBase58());
+    log("   statePda: ", statePda.toBase58());
+    log("   programId:", PROGRAM_ID.toBase58());
+
+    // 8 байт дискриминатора Anchor для "global:init"
+    const data = await anchorDiscriminator8("init"); // Uint8Array длиной 8
+
+    // Аккаунты в том порядке, который ожидает on-chain метод
+    const keys = [
+{ pubkey: walletPubkey,                     isSigner: true,  isWritable: true  }, // payer (signer)
+{ pubkey: statePda,                         isSigner: false, isWritable: true  }, // state PDA
+{ pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+
+    const ix = new solanaWeb3.TransactionInstruction({ programId: PROGRAM_ID, keys, data });
+
+    // Получаем блокхеш/lastValidBlockHeight и логируем
+    const { value: ctx } = await connection.getLatestBlockhashAndContext("processed");
+    const { blockhash, lastValidBlockHeight } = ctx;
+    log("⏱ blockhash:", blockhash);
+    log("⏱ lastValidBlockHeight:", lastValidBlockHeight);
+
+    const tx = new solanaWeb3.Transaction({
+    feePayer: walletPubkey,
+    recentBlockhash: blockhash,
+}).add(ix);
+
+    // 1) Симуляция — сразу покажет логи Anchor/InstructionError
+    await simulateAndLog(tx);
+
+    log("📝 Подписываем в Phantom…");
+    // 2) Отправка + подтверждение с расширенными логами
+    const sig = await sendViaPhantom(tx, { blockhash, lastValidBlockHeight });
+    logOk("✅ Готово! tx:", sig);
+    log("🔗 Explorer:", `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+} catch (e) {
+    // Печатаем максимально подробно
+    printRpcError("❌ Ошибка init:", e);
+}
+});
+
+// ===== DELETE INIT =====
+document.getElementById("btn-delete-init").addEventListener("click", async () => {
+    try {
+        // 1) Проверка подключения
+        if (!walletPubkey) throw new Error("Сначала подключи Phantom.");
+
+        // 2) PDA — те же сиды, что и в init
+        const statePda = await getStatePda();
+        log("🗑️ Вызываем delete_init()");
+        log("   signer:   ", walletPubkey.toBase58());
+        log("   statePda: ", statePda.toBase58());
+        log("   programId:", PROGRAM_ID.toBase58());
+
+        // 3) Дискриминатор Anchor для "global:delete_init"
+        const data = await anchorDiscriminator8("delete_init"); // 8 байт
+
+        // 4) Аккаунты в порядке, который ожидает on-chain метод
+        const keys = [
+            { pubkey: walletPubkey,                         isSigner: true,  isWritable: true  }, // signer (получатель ренты)
+            { pubkey: statePda,                             isSigner: false, isWritable: true  }, // state_pda
+            { pubkey: solanaWeb3.SystemProgram.programId,   isSigner: false, isWritable: false },
+        ];
+
+        const ix = new solanaWeb3.TransactionInstruction({
+            programId: PROGRAM_ID,
+            keys,
+            data, // только 8 байт дискриминатора, т.к. у метода нет аргументов
+        });
+
+        // 5) Блокхеш, формирование транзакции
+        const { value: ctx } = await connection.getLatestBlockhashAndContext("processed");
+        const { blockhash, lastValidBlockHeight } = ctx;
+        log("⏱ blockhash:", blockhash);
+        log("⏱ lastValidBlockHeight:", lastValidBlockHeight);
+
+        const tx = new solanaWeb3.Transaction({
+            feePayer: walletPubkey,
+            recentBlockhash: blockhash,
+        }).add(ix);
+
+        // 6) Симуляция → отправка → подтверждение
+        await simulateAndLog(tx);
+
+        log("📝 Подписываем в Phantom…");
+        const sig = await sendViaPhantom(tx, { blockhash, lastValidBlockHeight });
+
+        logOk("✅ delete_init выполнен. tx:", sig);
+        log("🔗 Explorer:", `https://explorer.solana.com/tx/${sig}?cluster=devnet`);
+        alert(`PDA удалён, рента возвращена подписанту.\nTx: ${sig}`);
+    } catch (e) {
+        printRpcError("❌ Ошибка delete_init:", e);
+        alert(`Ошибка delete_init: ${e.message || e}`);
+    }
+});
+
+    // Больше НИКАКИХ автоконнектов на загрузке страницы.
+        if (window.solana?.isPhantom) {
+            provider = window.solana;
+            log("ℹ️ Phantom найден. Нажми «Connect Phantom», чтобы подключиться.");
+        } else {
+            log("ℹ️ Установи Phantom Wallet: https://phantom.app");
+        }
+    }
+
+
+)();
+
+</script>
+</body>
+</html>

@@ -1,19 +1,11 @@
 use anchor_lang::prelude::*;
 
-mod say_hello;
+pub mod users;
 
-mod register_user;
+// Подключаем модуль users
+use users::*;        // Импортируем все функции и структуры из него
 
-
-
-use say_hello::*;
-use register_user::*;
-
-
-mod utils;
-
-// Подключаем модуль utils
-use utils::*;        // Импортируем все функции и структуры из него
+// use common::utils::*;
 
 
 declare_id!("5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t");
@@ -23,40 +15,6 @@ declare_id!("5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t");
 pub mod shine {
     use super::*;
 
-    // 
-    // 
-    // /// Тестовая функция — проксирует вызов в модуль `utils`
-    // pub fn test_utils(ctx: Context<TestContext>, extra_pubkey: Pubkey,
-    //     number: u64, note: String,
-    //     str_array: Vec<String>,
-    // ) -> Result<()> {
-    //     test(ctx, extra_pubkey, number, note, str_array)
-    // }
-    // 
-
-    // 
-    // // Вызов функции из say_hello.rs
-    // pub fn say_hello(ctx: Context<SayHello>) -> Result<()> {
-    //     say_hello_impl(ctx)
-    // }
-    // 
-    // // Вызов функции из register_user.rs
-    // pub fn register_user(ctx: Context<RegisterUser>, login: String, pubkey: Pubkey) -> Result<()> {
-    //     register_user_impl(ctx, login, pubkey)
-    // }
-
-    
-    
-    /// Расширенная регистрация пользователя
-    // pub fn do_register_user2(ctx: Context<RegisterUser2>, login: String, pubkey: Pubkey, account_size: u32) -> Result<()> {
-    //     register_user2(ctx.into(), login, pubkey, account_size)
-    // }
-
-
-
-///---------------------------------------------------------------
-/// Дальше по делу :)
-/// --------------------------------------------------------------
 
 
 
@@ -66,7 +24,7 @@ pub mod shine {
         login: String,
         pubkey: Pubkey,
     ) -> Result<()> {
-        utils::register_user_step_one(ctx, login, pubkey)
+        users::register_user_step_one(ctx, login, pubkey)
     }
 
 
@@ -74,7 +32,7 @@ pub mod shine {
     /// Одноразовая инициализация счётчика пользователей
     pub fn initialize_user_counter(ctx: Context<InitUserCounter>) -> Result<()> {
         // Вызов внутренней логики из утилит
-        utils::initialize_user_counter(
+        users::initialize_user_counter(
             &ctx.accounts.counter_pda,
             &ctx.accounts.signer,
             &ctx.accounts.system_program,
@@ -105,7 +63,7 @@ pub mod shine {
         device_sign_pubkey: Pubkey, // подпись устройства
         device_x25519_pubkey: Pubkey, // X25519 ключ для шифрования
     ) -> Result<()> {
-        utils::register_user_with_one_dev(
+        users::register_user_with_one_dev(
             ctx,
             login,
             pubkey,

@@ -1,0 +1,28 @@
+[package]
+name = "shine_users"
+version = "0.1.0"
+description = "User registration smart contract"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "shine_users"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+anchor-lang = "0.31.1"
+common = { path = "../common" }
+
+
+[features]
+default = []
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+cpi = []
+idl-build = ["anchor-lang/idl-build"]
