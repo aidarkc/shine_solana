@@ -1,4 +1,29 @@
-anchor build --program-name shine_payments
+Деплой в devnet (по умолчанию у тебя уже devnet):
+           обе программы сразу:
+anchor deploy
+           или по одной:
+anchor deploy --program-name shine_users
+anchor deploy --program-name shine_payments
+
+ Проверка деплоя
+anchor keys list
+solana program show 5dFcWDNp42Xn9Vv4oDMJzM4obBJ8hvDuAtPX54fT5L3t       // <ID_из_shine_users-keypair.json>
+solana program show GcGFR47xF7o7ztXzN4MFThmxzHn4z6VmpmELgNk8smCm       // <ID_из_shine_payments-keypair.json>
+
+ Апгрейд в будущем
+ После изменений кода:
+anchor build
+anchor upgrade --program-name shine_users
+anchor upgrade --program-name shine_payments
+
+ посмотреть адрес кошелька
+ solana address -k /home/ai/.config/solana/id.jsonanchor build --program-name shine_payments
+
+
+
+
+
+
 anchor deploy --program-name shine_payments
 
 solana program show  92sgkgx7KHpbhQu81mNGHaKa7skJB7esArVdPM7paDSW --url http://127.0.0.1:8899
