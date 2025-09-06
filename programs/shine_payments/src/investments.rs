@@ -3,14 +3,16 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{program::invoke_signed, system_instruction};
 use common::utils::*; // тянем общие PDA-хелперы из programs/common
 
-
+// === добавлено: используем наш NFT-модуль ===
+use crate::nft::{CreateNftParams, create_nft_with_freeze};
+// ============================================
 
 /// Утилита чтения структуры из PDA: читает байты и десериализует.
 /// Возвращает ошибку, если данных нет/пустые/неверный формат.
 fn read_state_from_pda(pda: &AccountInfo) -> Result<InvestState> {
-    let raw = safe_read_pda(pda);                                   // ← берём Vec<u8> (или пустой)
-    require!(!raw.is_empty(), ErrCode::EmptyPdaData);               // ← пусто — ошибка
-    let st = deserialize_invest_state(&raw)?;                          // ← десериализуем по формату
+    let raw = safe_read_pda(pda);                         // ← берём Vec<u8> (или пустой)
+    require!(!raw.is_empty(), ErrCode::EmptyPdaData);     // ← пусто — ошибка
+    let st = deserialize_invest_state(&raw)?;             // ← десериализуем по формату
     require!(st.format == INVEST_STATE_FORMAT_V1, ErrCode::UnsupportedFormat); // ← проверяем версию
     Ok(st)
 }
@@ -18,8 +20,8 @@ fn read_state_from_pda(pda: &AccountInfo) -> Result<InvestState> {
 /// Утилита записи структуры в PDA: сериализует и пишет.
 /// Важно: сам аккаунт уже должен существовать и быть #[account(mut)].
 fn write_state_to_pda(pda: &AccountInfo, s: &InvestState) -> Result<()> {
-    let raw = serialize_invest_state_v1(s); // ← 28 байт
-    write_to_pda(pda, &raw)              // ← записываем в начало data
+    let raw = serialize_invest_state_v1(s); // ← 24 байта
+    write_to_pda(pda, &raw)                 // ← записываем в начало data
 }
 
 /// ==============================================
@@ -63,9 +65,7 @@ pub struct UseState<'info> {
 /// Программа
 /// ==============================================
 
-
 use super::*;
-
 use anchor_lang::prelude::*;
 
 
@@ -74,7 +74,7 @@ use anchor_lang::prelude::*;
 /// format = 1, coef = 10, остальные поля = 0.
 /// ------------------------------------------
 pub fn init(ctx: Context<Init>) -> Result<()> {
-    let program_id = ctx.program_id;                              // ← адрес этой программы
+    let program_id = ctx.program_id; // ← адрес этой программы
 
     // 1. Проверка что вызывает именно разрешённый ключ
     /* todo   пока все могут вызыватьно                                         !! но в итоге будет добавленна проверка что бы только дао могло вызвать эту функцию один раз
@@ -98,7 +98,7 @@ pub fn init(ctx: Context<Init>) -> Result<()> {
         return Err(error!(ErrCode::PdaAlreadyExists));
     }
     
-    let pda_key_expected = Pubkey::find_program_address(&[PDA_SEED_PREFIX], program_id).0; // ← вычисляем PDA
+    let pda_key_expected = Pubkey::find_program_address(&[crate::PDA_SEED_PREFIX], program_id).0; // ← вычисляем PDA
     require_keys_eq!(
         pda_key_expected,
         ctx.accounts.state_pda.key(),
@@ -108,22 +108,21 @@ pub fn init(ctx: Context<Init>) -> Result<()> {
     // Конструируем дефолтную структуру состояния.
     let state = InvestState {
         format: INVEST_STATE_FORMAT_V1,  // ← 1
-        coef: DEFAULT_COEF,           // ← 10
-        q1_tokens: 0,                 // ← нули
+        coef: crate::DEFAULT_COEF,       // ← 10
+        q1_tokens: 0,                    // ← нули
         sum1_bonus: 0,
         q1_paid_tokens: 0,
         sum1_paid_bonus: 0,
     };
 
-
-    // Сериализуем в 28 байт.
+    // Сериализуем в 24 байта.
     let data = serialize_invest_state_v1(&state);
 
     // Для подписи PDA нужен bump; здесь получим (ключ, bump).
-    let (_pda_key, bump) = Pubkey::find_program_address(&[PDA_SEED_PREFIX], program_id);
+    let (_pda_key, bump) = Pubkey::find_program_address(&[crate::PDA_SEED_PREFIX], program_id);
 
     // Сиды для invoke_signed: [seed, bump]
-    let seeds: [&[u8]; 2] = [PDA_SEED_PREFIX, &[bump]];
+    let seeds: [&[u8]; 2] = [crate::PDA_SEED_PREFIX, &[bump]];
 
     // Создаём и сразу записываем, арендный минимум оплачивает payer.
     create_and_write_pda(
@@ -133,7 +132,7 @@ pub fn init(ctx: Context<Init>) -> Result<()> {
         program_id,
         &seeds,
         data,
-        PAY_STATE_SPACE,                          // 28 байт
+        crate::PAY_STATE_SPACE,                      // резерв с запасом
     )?;
 
     Ok(())
@@ -159,16 +158,32 @@ pub fn invest(ctx: Context<UseState>, _amount: u64) -> Result<()> {
 
 /// ------------------------------------------
 /// add_bonus: «начисление бонусов» (обычно вызывать от DAO).
-/// По заданию: читаем в начале, сохраняем в конце.
+/// По заданию: читаем в начале, создаём/добавляем NFT в очередь, сохраняем в конце.
+/// Для операций с NFT используем расширенный контекст AddBonusCtx (см. lib.rs).
 /// ------------------------------------------
-pub fn add_bonus(ctx: Context<UseState>, _investor: Pubkey, _coef: u64) -> Result<()> {
-    // 1) читаем
+pub fn add_bonus(ctx: Context<crate::AddBonusCtx>, investor: Pubkey, amount: u64) -> Result<()> {
+    // 1) читаем состояние
     let mut st = read_state_from_pda(&ctx.accounts.state_pda.to_account_info())?;
 
-    // --- здесь можно добавить логику корректировки sum1_bonus и т.п. ---
-    let _ = (&mut st, _investor, _coef); // заглушка, чтобы не было warning
+    // 2) создаём/добавляем NFT через модуль nft (создание metadata, mint 1, freeze, master edition, verify)
+    let next_index = st.q1_tokens as u64 + 1;
+    let params = CreateNftParams {
+        name: format!("Bonus #{}", next_index),
+        symbol: "BN".to_string(),
+        uri: "https://example.com/nft.json".to_string(), // заглушка для devnet-теста
+        index: next_index,
+        recipient: investor,
+    };
 
-    // 2) сохраняем
+    // ВАЖНО: mint_pda должен быть создан ТЕСТОМ заранее с decimals=0, mint_authority=signer, freeze_authority=signer.
+    create_nft_with_freeze(&ctx, params)?;
+
+    // 3) обновляем агрегаты очереди (минимально: увеличим счётчик и сумму бонусов)
+    st.q1_tokens = st.q1_tokens.saturating_add(1);
+    let add = u32::try_from(core::cmp::min(amount, u64::from(u32::MAX))).unwrap_or(u32::MAX);
+    st.sum1_bonus = st.sum1_bonus.saturating_add(add);
+
+    // 4) сохраняем
     write_state_to_pda(&ctx.accounts.state_pda.to_account_info(), &st)?;
     Ok(())
 }
@@ -254,83 +269,32 @@ use anchor_lang::prelude::*;
 pub const INVEST_STATE_FORMAT_V1: u32 = 1;
 
 /// Сырые данные состояния V1 занимают ровно 6 * 4 = 24 байта.
-/// Почему 6? Потому что у нас 6 полей по 4 байта (u32).
 pub const INVEST_STATE_RAW_LEN_V1: usize = 24; // байт
 
 /// ================================
 /// ОПИСАНИЕ СТРУКТУРЫ СОСТОЯНИЯ (V1)
 /// ================================
-/// Мы храним глобальные агрегаты по выплатам в одном PDA.
-/// Каждый элемент — 32-битное беззнаковое число (u32), Little Endian.
-///
-/// ПОЛЯ:
-///  1) format          — версия формата (всегда 1 для этого кода)
-///  2) coef            — коэффициент (по умолчанию 10, но можно менять)
-///  3) q1_tokens       — сколько токенов стоит в очереди на выплату (1-я очередь)
-///  4) sum1_bonus      — общая сумма «бонусов», которые нужно выплатить по 1-й очереди
-///  5) q1_paid_tokens  — сколько токенов уже выплачено по 1-й очереди (счётчик выполненного)
-///  6) sum1_paid_bonus — какая сумма «бонусов» уже выплачена по 1-й очереди
-///
-/// Итого: 6 полей * 4 байта = 24 байта.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InvestState {
-    /// Версия формата, должна быть INVEST_STATE_FORMAT_V1 (то есть 1).
     pub format: u32,
-
-    /// Текущий коэффициент (ваша бизнес-логика; например, 10 при инициализации).
     pub coef: u32,
-
-    /// Кол-во токенов в 1-й очереди, ожидающих выплаты.
     pub q1_tokens: u32,
-
-    /// Сумма бонусов, подлежащая выплате по 1-й очереди (ещё не выплачено).
     pub sum1_bonus: u32,
-
-    /// Сколько токенов уже выплачено по 1-й очереди (накопительный счётчик).
     pub q1_paid_tokens: u32,
-
-    /// Какая сумма бонусов уже выплачена по 1-й очереди (накопительный счётчик).
     pub sum1_paid_bonus: u32,
 }
-
-
-
-
-
-
-
-
 
 /// ========================================
 /// СЕРИАЛИЗАЦИЯ (структура -> массив байт)
 /// ========================================
-/// Мы вручную упаковываем каждое поле в 4 байта в порядке Little Endian.
-/// ПОЛНЫЙ РАЗМЕР: ровно 24 байта.
-/// ПОРЯДОК ПОЛЕЙ (по 4 байта каждое):
-///   [0..4)  format
-///   [4..8)  coef
-///   [8..12) q1_tokens
-///   [12..16) sum1_bonus
-///   [16..20) q1_paid_tokens
-///   [20..24) sum1_paid_bonus
 pub fn serialize_invest_state_v1(s: &InvestState) -> Vec<u8> {
-    // Для людей без опыта в Rust:
-    // Vec<u8> — это "динамический массив байт".
-    // Мы заранее резервируем 24 байта, чтобы не делать лишних перераспределений.
     let mut out = Vec::with_capacity(INVEST_STATE_RAW_LEN_V1);
-
-    // Нормируем версию: даже если в поле format «что-то другое»,
-    // мы пишем именно константу версии, чтобы на чейне хранилась корректная метка формата.
     out.extend_from_slice(&INVEST_STATE_FORMAT_V1.to_le_bytes()); // [0..4)
-
-    // Далее — остальные поля как есть, по 4 байта LE каждое.
     out.extend_from_slice(&s.coef.to_le_bytes());            // [4..8)
     out.extend_from_slice(&s.q1_tokens.to_le_bytes());       // [8..12)
     out.extend_from_slice(&s.sum1_bonus.to_le_bytes());      // [12..16)
     out.extend_from_slice(&s.q1_paid_tokens.to_le_bytes());  // [16..20)
     out.extend_from_slice(&s.sum1_paid_bonus.to_le_bytes()); // [20..24)
-
-    // Итоговая длина должна быть ровно 24 байта.
     debug_assert_eq!(out.len(), INVEST_STATE_RAW_LEN_V1);
     out
 }
@@ -338,48 +302,25 @@ pub fn serialize_invest_state_v1(s: &InvestState) -> Vec<u8> {
 /// ===========================================
 /// ДЕСЕРИАЛИЗАЦИЯ (массив байт -> структура)
 /// ===========================================
-/// На вход подаём срез байт `data`, ожидаем минимум 24 байта.
-/// 1) Проверяем, что данных хватает.
-/// 2) Считываем первые 4 байта как `format` и убеждаемся, что это версия 1.
-/// 3) Последовательно читаем остальные 5 чисел по 4 байта (LE) каждое.
-/// 4) Возвращаем заполненную структуру.
 pub fn deserialize_invest_state(data: &[u8]) -> Result<InvestState> {
-    // 1) Проверяем длину. Если меньше 24 байт — данных недостаточно.
     if data.len() < INVEST_STATE_RAW_LEN_V1 {
         return Err(error!(ErrCode::DeserializationError));
     }
-
-    // Вспомогательная функция: безопасно читает 4 байта как u32 в Little Endian
-    // из указанного диапазона [start..start+4).
     fn read_u32_le(slice: &[u8], start: usize) -> u32 {
-        // Здесь используем get(..) + try_into(), чтобы не паниковать при неверных индексах.
         let bytes: [u8; 4] = slice[start..start + 4]
             .try_into()
             .expect("slice has enough length due to pre-check");
         u32::from_le_bytes(bytes)
     }
-
-    // 2) Читаем и проверяем версию формата.
     let format = read_u32_le(data, 0);
     if format != INVEST_STATE_FORMAT_V1 {
-        // Если формат другой — значит это не поддерживаемая версия.
         return Err(error!(ErrCode::UnsupportedFormat));
     }
-
-    // 3) Читаем остальные поля по 4 байта.
     let coef            = read_u32_le(data, 4);
     let q1_tokens       = read_u32_le(data, 8);
     let sum1_bonus      = read_u32_le(data, 12);
     let q1_paid_tokens  = read_u32_le(data, 16);
     let sum1_paid_bonus = read_u32_le(data, 20);
 
-    // 4) Собираем структуру и возвращаем её.
-    Ok(InvestState {
-        format,
-        coef,
-        q1_tokens,
-        sum1_bonus,
-        q1_paid_tokens,
-        sum1_paid_bonus,
-    })
+    Ok(InvestState { format, coef, q1_tokens, sum1_bonus, q1_paid_tokens, sum1_paid_bonus })
 }
