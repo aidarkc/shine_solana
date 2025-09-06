@@ -15,6 +15,11 @@ bench = false
 anchor-lang = "0.31.1"
 common = { path = "../common" }
 
+# ==== добавлено для NFT-функционала ====
+anchor-spl = { version = "0.31.1", features = ["associated_token", "token"] }
+mpl-token-metadata = "5.1.1"
+spl-token = { version = "4.0.0", features = ["no-entrypoint"] }
+# ======================================
 
 [features]
 default = []
